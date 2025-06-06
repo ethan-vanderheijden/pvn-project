@@ -12,12 +12,12 @@ class PortSteering(model_base.BASEV2, model_base.HasId):
     src_port = sa.Column(
         sa.String(db_const.UUID_FIELD_SIZE),
         sa.ForeignKey("ports.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
     dest_port = sa.Column(
         sa.String(db_const.UUID_FIELD_SIZE),
         sa.ForeignKey("ports.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
     flow_classifier = sa.Column(sa.String(512), nullable=True)
 

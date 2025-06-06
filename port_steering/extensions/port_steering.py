@@ -1,6 +1,6 @@
 import abc
 
-from neutron_lib import constants
+from neutron_lib import constants, exceptions as neutron_exc
 from neutron_lib.plugins import directory
 from neutron_lib.api import extensions as api_extensions
 from neutron_lib.services import base as service_base
@@ -65,6 +65,14 @@ RESOURCE_ATTRIBUTE_MAP = {
 }
 
 
+class PortSteeringNotFound(neutron_exc.NotFound):
+    message = "Port Steering %(id)s not found."
+
+
+class PortSteeringPortNotFound(neutron_exc.NotFound):
+    message = "Port Steering Neutron Port %(id)s not found."
+
+
 class Port_steering(api_extensions.ExtensionDescriptor):
     @classmethod
     def get_name(cls):
@@ -83,17 +91,18 @@ class Port_steering(api_extensions.ExtensionDescriptor):
         return "2025-06-05T10:00:00-00:00"
 
     @classmethod
-    def update_attributes_map(cls, extended_attributes,
-                              extension_attrs_map=None):
+    def update_attributes_map(cls, extended_attributes, extension_attrs_map=None):
         super().update_attributes_map(
-            extended_attributes, extension_attrs_map=RESOURCE_ATTRIBUTE_MAP)
+            extended_attributes, extension_attrs_map=RESOURCE_ATTRIBUTE_MAP
+        )
 
     @classmethod
     def get_resources(cls):
         plugin = directory.get_plugin(PLUGIN_TYPE)
         params = RESOURCE_ATTRIBUTE_MAP.get(RESOURCE_NAME)
+        collections_name = "bulk_" + RESOURCE_NAME
         controller = base.create_resource(
-            RESOURCE_NAME,
+            collections_name,
             RESOURCE_NAME,
             plugin,
             params,
@@ -101,7 +110,7 @@ class Port_steering(api_extensions.ExtensionDescriptor):
             allow_pagination=True,
             allow_sorting=True,
         )
-        ext = extensions.ResourceExtension(RESOURCE_NAME, controller, attr_map=params)
+        ext = extensions.ResourceExtension(collections_name, controller, attr_map=params)
         return [ext]
 
     @classmethod
@@ -122,5 +131,26 @@ class PortSteeringPluginBase(service_base.ServicePluginBase, metaclass=abc.ABCMe
         pass
 
     @abc.abstractmethod
+    def get_bulk_port_steering(
+        self,
+        context,
+        filters=None,
+        fields=None,
+        sorts=None,
+        limit=None,
+        marker=None,
+        page_reverse=False,
+    ):
+        pass
+
+    @abc.abstractmethod
     def create_port_steering(self, context, data):
+        pass
+
+    @abc.abstractmethod
+    def update_port_steering(self, context, id, data):
+        pass
+
+    @abc.abstractmethod
+    def delete_port_steering(self, context, id):
         pass
