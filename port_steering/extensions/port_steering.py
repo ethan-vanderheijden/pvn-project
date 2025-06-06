@@ -100,7 +100,7 @@ class Port_steering(api_extensions.ExtensionDescriptor):
     def get_resources(cls):
         plugin = directory.get_plugin(PLUGIN_TYPE)
         params = RESOURCE_ATTRIBUTE_MAP.get(RESOURCE_NAME)
-        collections_name = "bulk_" + RESOURCE_NAME
+        collections_name = RESOURCE_NAME + "s"
         controller = base.create_resource(
             collections_name,
             RESOURCE_NAME,
@@ -131,7 +131,7 @@ class PortSteeringPluginBase(service_base.ServicePluginBase, metaclass=abc.ABCMe
         pass
 
     @abc.abstractmethod
-    def get_bulk_port_steering(
+    def get_port_steerings(
         self,
         context,
         filters=None,
