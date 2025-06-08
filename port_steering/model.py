@@ -133,12 +133,12 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
             page_reverse=page_reverse,
         )
 
-    def create_port_steering(self, context, data):
-        result = self._create_port_steering(context, data)
+    def create_port_steering(self, context, port_steering):
+        result = self._create_port_steering(context, port_steering)
         return self._make_port_steering_dict(result)
 
-    def update_port_steering(self, context, id, data):
-        new_steering = data["port_steering"]
+    def update_port_steering(self, context, id, port_steering):
+        new_steering = port_steering["port_steering"]
         with db_api.CONTEXT_WRITER.using(context):
             old_steering = self._get_port_steering(context, id)
             old_steering.update(new_steering)

@@ -18,8 +18,8 @@ class PortSteeringPlugin(model.PortSteeringDbPlugin):
         self.rpc_server = PluginRpcServer(self)
         self.notifier = AgentRpcClient()
 
-    def create_port_steering(self, context, data):
-        result = super()._create_port_steering(context, data)
+    def create_port_steering(self, context, port_steering):
+        result = super()._create_port_steering(context, port_steering)
         self.notifier.notify_steering_updated(context, result)
         return self._make_port_steering_dict(result)
 
