@@ -2,6 +2,7 @@ import port_steering.extensions.port_steering as ext
 from port_steering import model
 from port_steering.rpc import PluginRpcServer, AgentRpcClient
 
+from neutron.db import models_v2
 from neutron_lib.db import model_query, api as db_api
 
 
@@ -27,9 +28,11 @@ class PortSteeringPlugin(model.PortSteeringDbPlugin):
         self.notifier.notify_steering_deleted(context, steering)
 
     def get_port_steering(self, context, ports):
-        if not isinstance(ports, list):
-            ports = [ports]
         with db_api.CONTEXT_READER.using(context):
-            return model_query.get_collection(
+            data = model_query.get_collection(
                 context, model.PortSteering, self._make_port_steering_dict, {"dest_port": ports}
             )
+            for steering in data:
+                dest_port = models_v2.Port.get(id=steering["dest_neutron_port"])
+                steering["overwrite_mac"] = dest_port.mac_address
+            return data

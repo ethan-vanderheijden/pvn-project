@@ -18,6 +18,8 @@ class PluginRpcServer():
     def get_port_steering(self, context, **kwargs):
         ports = kwargs.get("ports")
         if ports:
+            if not isinstance(ports, list):
+                ports = [ports]
             return self.api.get_port_steering(context, ports)
         else:
             return []

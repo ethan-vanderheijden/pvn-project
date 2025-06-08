@@ -15,17 +15,40 @@ MAX_SELECTOR_LEN = 512
 class PortSteering(model_base.BASEV2, model_base.HasId):
     __tablename__ = "port_steering"
 
-    src_port = sa.Column(
+    src_neutron_port = sa.Column(
         sa.String(db_const.UUID_FIELD_SIZE),
         sa.ForeignKey("ports.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    dest_neutron_port = sa.Column(
+        sa.String(db_const.UUID_FIELD_SIZE),
+        sa.ForeignKey("ports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    src_ip = sa.Column(
+        sa.String(db_const.IP_ADDR_FIELD_SIZE),
+        nullable=True,
+    )
+    dest_ip = sa.Column(
+        sa.String(db_const.IP_ADDR_FIELD_SIZE),
+        nullable=True,
+    )
+    src_port = sa.Column(
+        sa.Integer(),
+        nullable=True,
     )
     dest_port = sa.Column(
-        sa.String(db_const.UUID_FIELD_SIZE),
-        sa.ForeignKey("ports.id", ondelete="CASCADE"),
-        nullable=False,
+        sa.Integer(),
+        nullable=True,
     )
-    flow_classifier = sa.Column(sa.String(512), nullable=True)
+    ethertype = sa.Column(
+        sa.Integer(),
+        nullable=True,
+    )
+    protocol = sa.Column(
+        sa.Integer(),
+        nullable=True,
+    )
 
     api_collections = []
     collection_resource_map = {}
@@ -40,22 +63,27 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
 
     def _create_port_steering(self, context, data):
         port_steer = data["port_steering"]
-        src = port_steer["src_port"]
-        dest = port_steer["dest_port"]
+        src_neutron = port_steer["src_neutron_port"]
+        dest_neutron = port_steer["dest_neutron_port"]
         with db_api.CONTEXT_WRITER.using(context):
-            self._get_port(context, src)
-            self._get_port(context, dest)
+            self._get_neutron_port(context, src_neutron)
+            self._get_neutron_port(context, dest_neutron)
 
             port_steer_db = PortSteering(
                 id=uuidutils.generate_uuid(),
-                src_port=src,
-                dest_port=dest,
-                flow_classifier=data["flow_classifier"],
+                src_neutron_port=src_neutron,
+                dest_neutron_port=dest_neutron,
+                src_ip=port_steer.get("src_ip"),
+                dest_ip=port_steer.get("dest_ip"),
+                src_port=port_steer.get("src_port"),
+                dest_port=port_steer.get("dest_port"),
+                ethertype=port_steer.get("ethertype"),
+                protocol=port_steer.get("protocol"),
             )
             context.session.add(port_steer_db)
             return port_steer_db
 
-    def _get_port(self, context, id):
+    def _get_neutron_port(self, context, id):
         # raises an error if ports don't exist
         try:
             return model_query.get_by_id(context, models_v2.Port, id)
@@ -65,9 +93,14 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
     def _make_port_steering_dict(self, port_steering, fields=None):
         res = {
             "id": port_steering["id"],
-            "src_port": port_steering["src_port"],
-            "dest_port": port_steering["dest_port"],
-            "flow_classifier": port_steering["flow_classifier"],
+            "src_neutron_port": port_steering["src_neutron_port"],
+            "dest_neutron_port": port_steering["dest_neutron_port"],
+            "src_ip": port_steering.get("src_ip"),
+            "dest_ip": port_steering.get("dest_ip"),
+            "src_port": port_steering.get("src_port"),
+            "dest_port": port_steering.get("dest_port"),
+            "ethertype": port_steering.get("ethertype"),
+            "protocol": port_steering.get("protocol"),
         }
         return db_utils.resource_fields(res, fields)
 
