@@ -46,13 +46,15 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
 
     def update_port_steering(self, context, **kwargs):
         steering_data = kwargs["port_steering"]
-        port_id = steering_data["dest_port"]
+        port_id = steering_data["src_neutron_port"]
+        LOG.warn(f"Got update notification for {port_id}")
         if port_id in self.steering_data:
             LOG.warn("Updated steering data for tracked port")
 
     def delete_port_steering(self, context, **kwargs):
         steering_data = kwargs["port_steering"]
-        port_id = steering_data["dest_port"]
+        port_id = steering_data["src_neutron_port"]
+        LOG.warn(f"Got delete notification for {port_id}")
         if port_id in self.steering_data:
             if steering_data["id"] in self.steering_data[port_id]:
                 LOG.warn("Deleting steering data that was tracked")

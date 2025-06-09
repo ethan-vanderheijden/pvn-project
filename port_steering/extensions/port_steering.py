@@ -1,9 +1,10 @@
 import abc
 
-from neutron_lib import constants, exceptions as neutron_exc
+from neutron_lib import exceptions as neutron_exc
 from neutron_lib.plugins import directory
 from neutron_lib.api import extensions as api_extensions
 from neutron_lib.services import base as service_base
+from neutron_lib.db import constants as db_const
 from oslo_config import cfg
 from oslo_log import log
 
@@ -35,60 +36,67 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:uuid": None},
             "primary_key": True,
         },
+        "project_id": {
+            "allow_post": True,
+            "allow_put": False,
+            "is_visible": True,
+            "validate": {"type:string": db_const.PROJECT_ID_FIELD_SIZE},
+            "required_by_policy": True,
+        },
         "src_neutron_port": {
             "allow_post": True,
             "allow_put": False,
-            "validate": {"type:uuid": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "validate": {"type:uuid_or_none": None},
+            "default": None,
             "is_visible": True,
         },
         "dest_neutron_port": {
             "allow_post": True,
             "allow_put": False,
-            "validate": {"type:uuid": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "validate": {"type:uuid_or_none": None},
+            "default": None,
             "is_visible": True,
         },
         "src_ip": {
             "allow_post": True,
             "allow_put": False,
             "validate": {"type:ip_address_or_none": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "default": None,
             "is_visible": True,
         },
         "dest_ip": {
             "allow_post": True,
             "allow_put": False,
             "validate": {"type:ip_address_or_none": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "default": None,
             "is_visible": True,
         },
         "src_port": {
             "allow_post": True,
             "allow_put": False,
-            "validate": {"type:port_range_or_none": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "validate": {"type:port_range": None},
+            "default": None,
             "is_visible": True,
         },
         "dest_port": {
             "allow_post": True,
             "allow_put": False,
-            "validate": {"type:port_range_or_none": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "validate": {"type:port_range": None},
+            "default": None,
             "is_visible": True,
         },
         "ethertype": {
             "allow_post": True,
             "allow_put": False,
-            "validate": {"type:ethertype": None},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "validate": {"type:range_or_none": [0, 2**16 - 1]},
+            "default": None,
             "is_visible": True,
         },
         "protocol": {
             "allow_post": True,
             "allow_put": False,
             "validate": {"type:range_or_none": [0, 255]},
-            "default": constants.ATTR_NOT_SPECIFIED,
+            "default": None,
             "is_visible": True,
         },
     }

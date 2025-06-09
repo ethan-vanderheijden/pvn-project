@@ -12,7 +12,7 @@ from neutron_lib.db import constants as db_const
 MAX_SELECTOR_LEN = 512
 
 
-class PortSteering(model_base.BASEV2, model_base.HasId):
+class PortSteering(model_base.BASEV2, model_base.HasId, model_base.HasProject):
     __tablename__ = "port_steering"
 
     src_neutron_port = sa.Column(
