@@ -5,23 +5,31 @@ import port_steering.extensions.port_steering as ext
 
 from oslo_utils import uuidutils
 from neutron.db import models_v2
+from neutron_lib.callbacks import registry, resources, events
 from neutron_lib.db import model_query, utils as db_utils, api as db_api
 from neutron_lib.db import model_base
 from neutron_lib.db import constants as db_const
+from oslo_log import log as logging
+
+LOG = logging.getLogger(__name__)
 
 MAX_SELECTOR_LEN = 512
 
 
+@registry.has_registry_receivers
 class PortSteering(model_base.BASEV2, model_base.HasId, model_base.HasProject):
     __tablename__ = "port_steering"
 
     src_neutron_port = sa.Column(
         sa.String(db_const.UUID_FIELD_SIZE),
+        # Any installed steering rules will be naturally cleaned up when port disappears
         sa.ForeignKey("ports.id", ondelete="CASCADE"),
         nullable=False,
     )
     dest_neutron_port = sa.Column(
         sa.String(db_const.UUID_FIELD_SIZE),
+        # Warning: Agents won't know if steering's destination port was deleted
+        # must catch port delete events and send out notification
         sa.ForeignKey("ports.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -55,6 +63,28 @@ class PortSteering(model_base.BASEV2, model_base.HasId, model_base.HasProject):
 
 
 class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
+    def __init__(self):
+        super().__init__()
+
+        def _cascade_delete_port(resource, event, trigger, payload=None):
+            port_id = payload.resource_id
+            steerings = []
+            LOG.warn("deleting port: " + port_id)
+            with db_api.CONTEXT_WRITER.using(payload.context):
+                steerings = model_query.get_collection(
+                    payload.context,
+                    PortSteering,
+                    self._make_port_steering_dict,
+                    {"dest_neutron_port": [port_id]},
+                )
+                LOG.warn("Heard delete for port: " + str(port_id))
+                LOG.warn("Associated port steerings: " + str(steerings))
+
+            for steering in steerings:
+                self.delete_port_steering(payload.context, steering["id"])
+
+        registry.subscribe(_cascade_delete_port, resources.PORT, events.BEFORE_DELETE)
+
     def _get_port_steering(self, context, id):
         try:
             return model_query.get_by_id(context, PortSteering, id)

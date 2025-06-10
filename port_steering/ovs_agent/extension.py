@@ -39,18 +39,19 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
             steering_data = self.plugin_client.get_port_steering(context, [port_id])
             LOG.warn("Found steering data: " + str(steering_data))
             self.steering_data[port_id] = {rule["id"]: rule for rule in steering_data}
+            self.steering_data[port_id]["ofport"] = data["vif_port"].ofport
             for rule in steering_data:
-                self._install_rule(data["vif_port"].ofport, rule)
-
-        self.steering_data[port_id]["ofport"] = data["vif_port"].ofport
+                self._install_rule(self._get_ofport(port_id), rule)
 
     def delete_port(self, context, data):
         port_id = data["port_id"]
         if port_id in self.steering_data:
             LOG.warn("Existing port was deleted.... " + str(data))
-            rules = self.steering_data.pop(port_id)
-            for rule in rules.values():
-                self._delete_rule(data["vif_port"].ofport, rule)
+            ofport = self._get_ofport(port_id)
+            data = self.steering_data.pop(port_id)
+            data.pop("ofport")
+            for rule in data.values():
+                self._delete_rule(ofport, rule)
         else:
             LOG.warn("Untracked port was deleted.... ")
 
