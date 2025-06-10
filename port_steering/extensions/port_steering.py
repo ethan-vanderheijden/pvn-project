@@ -4,6 +4,7 @@ from neutron_lib import exceptions as neutron_exc
 from neutron_lib.plugins import directory
 from neutron_lib.api import extensions as api_extensions
 from neutron_lib.services import base as service_base
+from neutron_lib import constants
 from neutron_lib.db import constants as db_const
 from oslo_config import cfg
 from oslo_log import log
@@ -22,7 +23,20 @@ service_config.register_service_opts(service_config.SERVICE_OPTS, cfg.CONF)
 cfg.CONF.import_opt("api_extensions_path", "neutron.common.config")
 extensions.append_api_extensions_path(port_extensions.__path__)
 
-LOG.warn("EXECUTING!!! " + str(port_extensions.__path__))
+
+fc_supported_ethertypes = [constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]
+
+
+def normalize_ethertype(value):
+    if value is None:
+        return constants.ETHERTYPE_IP
+    if isinstance(value, str):
+        for ether_type in fc_supported_ethertypes:
+            if value.lower() == ether_type.lower():
+                return ether_type
+    raise UnsupportedEthertype(
+        ethertype=value, values=fc_supported_ethertypes)
+
 
 PLUGIN_TYPE = "PORT_STEERING"
 
@@ -88,7 +102,7 @@ RESOURCE_ATTRIBUTE_MAP = {
         "ethertype": {
             "allow_post": True,
             "allow_put": False,
-            "validate": {"type:range_or_none": [0, 2**16 - 1]},
+            "convert_to": normalize_ethertype,
             "default": None,
             "is_visible": True,
         },
@@ -109,6 +123,10 @@ class PortSteeringNotFound(neutron_exc.NotFound):
 
 class PortSteeringPortNotFound(neutron_exc.NotFound):
     message = "Port Steering Neutron Port %(id)s not found."
+
+
+class UnsupportedEthertype(neutron_exc.InvalidInput):
+    message = "Flow Classifier does not support ethertype %(ethertype)s. Supported ethertype values are %(values)s."
 
 
 class Port_steering(api_extensions.ExtensionDescriptor):

@@ -80,19 +80,18 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
 
     def _prepare_match(self, rule):
         match_kwargs = {}
-        if rule.get("ethertype"):
-            eth_type = rule["ethertype"]
-            match_kwargs["eth_type"] = eth_type
-            if eth_type == 0x0800:
-                if rule.get("src_ip"):
-                    match_kwargs["ipv4_src"] = rule.get("src_ip")
-                if rule.get("dest_ip"):
-                    match_kwargs["ipv4_dst"] = rule.get("dest_ip")
-            elif eth_type == 0x86DD:
-                if rule.get("src_ip"):
-                    match_kwargs["ipv6_src"] = rule.get("src_ip")
-                if rule.get("dest_ip"):
-                    match_kwargs["ipv6_dst"] = rule.get("dest_ip")
+        eth_type = rule["ethertype"]
+        match_kwargs["eth_type"] = eth_type
+        if eth_type == 0x0800:
+            if rule.get("src_ip"):
+                match_kwargs["ipv4_src"] = rule.get("src_ip")
+            if rule.get("dest_ip"):
+                match_kwargs["ipv4_dst"] = rule.get("dest_ip")
+        elif eth_type == 0x86DD:
+            if rule.get("src_ip"):
+                match_kwargs["ipv6_src"] = rule.get("src_ip")
+            if rule.get("dest_ip"):
+                match_kwargs["ipv6_dst"] = rule.get("dest_ip")
 
         if rule.get("protocol"):
             proto = rule["protocol"]

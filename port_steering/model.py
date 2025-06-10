@@ -43,7 +43,7 @@ class PortSteering(model_base.BASEV2, model_base.HasId, model_base.HasProject):
     )
     ethertype = sa.Column(
         sa.Integer(),
-        nullable=True,
+        nullable=False,
     )
     protocol = sa.Column(
         sa.Integer(),
