@@ -20,7 +20,7 @@ class PluginRpcServer():
         if ports:
             if not isinstance(ports, list):
                 ports = [ports]
-            return self.api.get_port_steering(context, ports)
+            return self.api.get_steering_info(context, ports)
         else:
             return []
 
@@ -56,7 +56,7 @@ class AgentRpcServer():
 class AgentRpcClient():
     def __init__(self):
         self.topic = AGENT_TOPIC
-        target = oslo_messaging.Target(topic=self.topic)
+        target = oslo_messaging.Target(topic=self.topic, fanout=True)
         self.client = n_rpc.get_client(target)
 
     def notify_steering_updated(self, context, port_steering):
