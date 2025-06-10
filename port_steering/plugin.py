@@ -4,6 +4,9 @@ from port_steering.rpc import PluginRpcServer, AgentRpcClient
 
 from neutron.db import models_v2
 from neutron_lib.db import model_query, api as db_api
+from oslo_log import log as logging
+
+LOG = logging.getLogger(__name__)
 
 
 class PortSteeringPlugin(model.PortSteeringDbPlugin):
@@ -19,9 +22,18 @@ class PortSteeringPlugin(model.PortSteeringDbPlugin):
         self.notifier = AgentRpcClient()
 
     def create_port_steering(self, context, port_steering):
-        result = super()._create_port_steering(context, port_steering)
-        self.notifier.notify_steering_updated(context, result)
-        return self._make_port_steering_dict(result)
+        steering = super()._create_port_steering(context, port_steering)
+        steering = self._make_port_steering_dict(steering)
+
+        steering_augmented = steering.copy()
+        dest_port = model_query.get_by_id(
+            context, models_v2.Port, steering_augmented["dest_neutron_port"]
+        )
+        steering_augmented["overwrite_mac"] = dest_port.mac_address
+        LOG.warn("Steering: " + str(steering))
+        self.notifier.notify_steering_updated(context, steering_augmented)
+
+        return self._make_port_steering_dict(steering)
 
     def delete_port_steering(self, context, id):
         steering = super().delete_port_steering(context, id)
@@ -30,9 +42,14 @@ class PortSteeringPlugin(model.PortSteeringDbPlugin):
     def get_steering_info(self, context, ports):
         with db_api.CONTEXT_READER.using(context):
             data = model_query.get_collection(
-                context, model.PortSteering, self._make_port_steering_dict, {"dest_neutron_port": ports}
+                context,
+                model.PortSteering,
+                self._make_port_steering_dict,
+                {"src_neutron_port": ports},
             )
             for steering in data:
-                dest_port = model_query.get_by_id(context, models_v2.Port, steering["dest_neutron_port"])
+                dest_port = model_query.get_by_id(
+                    context, models_v2.Port, steering["dest_neutron_port"]
+                )
                 steering["overwrite_mac"] = dest_port.mac_address
             return data

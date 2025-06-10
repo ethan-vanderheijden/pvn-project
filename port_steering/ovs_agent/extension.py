@@ -9,17 +9,23 @@ from oslo_config import cfg
 
 LOG = logging.getLogger(__name__)
 
+TARGET_TABLE = ovs_constants.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE
+TARGET_PRIORITY = 100
+
 
 class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
     def initialize(self, connection, driver_type):
         if driver_type != ovs_constants.EXTENSION_DRIVER_TYPE:
-            LOG.error('Port steering extension is only supported for OVS, '
-                      'currently uses %(driver_type)s',
-                      {'driver_type': driver_type})
+            LOG.error(
+                "Port steering extension is only supported for OVS, "
+                "currently uses %(driver_type)s",
+                {"driver_type": driver_type},
+            )
             sys.exit(1)
 
         self.rpc_server = AgentRpcServer(self)
         self.plugin_client = PluginRpcClient(cfg.CONF.host)
+        self.int_br = self.agent_api.request_int_br()
 
         self.steering_data = {}
 
@@ -28,35 +34,99 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
 
     def handle_port(self, context, data):
         port_id = data["port_id"]
-        if port_id in self.steering_data:
-            LOG.warn("Existing port was changed...")
-        else:
+        if port_id not in self.steering_data:
             LOG.warn("Found new port.... " + str(data))
             steering_data = self.plugin_client.get_port_steering(context, [port_id])
             LOG.warn("Found steering data: " + str(steering_data))
-            self.steering_data[port_id] = steering_data
+            self.steering_data[port_id] = {rule["id"]: rule for rule in steering_data}
+            for rule in steering_data:
+                self._install_rule(rule)
 
     def delete_port(self, context, data):
         port_id = data["port_id"]
         if port_id in self.steering_data:
             LOG.warn("Existing port was deleted.... " + str(data))
-            del self.steering_data[port_id]
+            rules = self.steering_data.pop(port_id)
+            for rule in rules.values():
+                self._delete_rule(rule)
         else:
             LOG.warn("Untracked port was deleted.... ")
 
     def update_port_steering(self, context, **kwargs):
         steering_data = kwargs["port_steering"]
+        rule_id = steering_data["id"]
         port_id = steering_data["src_neutron_port"]
         LOG.warn(f"Got update notification for {port_id}")
         if port_id in self.steering_data:
             LOG.warn("Updated steering data for tracked port")
+            LOG.warn("Steering: " + str(steering_data))
+            if rule_id in self.steering_data[port_id]:
+                self._delete_rule(self.steering_data[port_id][rule_id])
+            self.steering_data[port_id][rule_id] = steering_data
+            self._install_rule(steering_data)
 
     def delete_port_steering(self, context, **kwargs):
         steering_data = kwargs["port_steering"]
+        rule_id = steering_data["id"]
         port_id = steering_data["src_neutron_port"]
         LOG.warn(f"Got delete notification for {port_id}")
         if port_id in self.steering_data:
-            if steering_data["id"] in self.steering_data[port_id]:
+            if rule_id in self.steering_data[port_id]:
+                rule = self.steering_data[port_id].pop(rule_id)
+                self._delete_rule(rule)
                 LOG.warn("Deleting steering data that was tracked")
             else:
-                LOG.warn("Deleting untracked teering data for existing port")
+                LOG.warn("Deleting untracked steering data for existing port")
+
+    def _prepare_match(self, rule):
+        match_kwargs = {}
+        if rule.get("ethertype"):
+            eth_type = rule["ethertype"]
+            match_kwargs["eth_type"] = eth_type
+            if eth_type == 0x0800:
+                if rule.get("src_ip"):
+                    match_kwargs["ipv4_src"] = rule.get("src_ip")
+                if rule.get("dest_ip"):
+                    match_kwargs["ipv4_dst"] = rule.get("dest_ip")
+            elif eth_type == 0x86DD:
+                if rule.get("src_ip"):
+                    match_kwargs["ipv6_src"] = rule.get("src_ip")
+                if rule.get("dest_ip"):
+                    match_kwargs["ipv6_dst"] = rule.get("dest_ip")
+
+        if rule.get("protocol"):
+            proto = rule["protocol"]
+            match_kwargs["ip_proto"] = proto
+            if proto == 0x06:
+                if rule.get("src_port"):
+                    match_kwargs["tcp_src"] = rule.get("src_port")
+                if rule.get("dest_port"):
+                    match_kwargs["tcp_dst"] = rule.get("dest_port")
+            elif proto == 0x11:
+                if rule.get("src_port"):
+                    match_kwargs["udp_src"] = rule.get("src_port")
+                if rule.get("dest_port"):
+                    match_kwargs["udp_dst"] = rule.get("dest_port")
+
+        return match_kwargs
+
+    def _install_rule(self, rule):
+        (_, ofp, ofpp) = self.int_br._get_dp()
+        set_mac = ofpp.OFPActionSetField(eth_dst=rule["overwrite_mac"])
+        normal = ofpp.OFPActionOutput(ofp.OFPP_NORMAL, 0)
+        self.int_br.install_apply_actions(
+            [set_mac, normal],
+            table_id=TARGET_TABLE,
+            priority=TARGET_PRIORITY,
+            **self._prepare_match(rule),
+        )
+        LOG.warn("Installed rule: " + str(rule))
+
+    def _delete_rule(self, rule):
+        self.int_br.uninstall_flows(
+            strict=True,
+            table_id=TARGET_TABLE,
+            priority=TARGET_PRIORITY,
+            **self._prepare_match(rule),
+        )
+        LOG.warn("Deleted rule: " + str(rule))
