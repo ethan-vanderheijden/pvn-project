@@ -40,7 +40,9 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
             LOG.warn("Found steering data: " + str(steering_data))
             self.steering_data[port_id] = {rule["id"]: rule for rule in steering_data}
             for rule in steering_data:
-                self._install_rule(rule)
+                self._install_rule(data["vif_port"].ofport, rule)
+
+        self.steering_data[port_id]["ofport"] = data["vif_port"].ofport
 
     def delete_port(self, context, data):
         port_id = data["port_id"]
@@ -48,7 +50,7 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
             LOG.warn("Existing port was deleted.... " + str(data))
             rules = self.steering_data.pop(port_id)
             for rule in rules.values():
-                self._delete_rule(rule)
+                self._delete_rule(data["vif_port"].ofport, rule)
         else:
             LOG.warn("Untracked port was deleted.... ")
 
@@ -61,9 +63,9 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
             LOG.warn("Updated steering data for tracked port")
             LOG.warn("Steering: " + str(steering_data))
             if rule_id in self.steering_data[port_id]:
-                self._delete_rule(self.steering_data[port_id][rule_id])
+                self._delete_rule(self._get_ofport(port_id), self.steering_data[port_id][rule_id])
             self.steering_data[port_id][rule_id] = steering_data
-            self._install_rule(steering_data)
+            self._install_rule(self._get_ofport(port_id), steering_data)
 
     def delete_port_steering(self, context, **kwargs):
         steering_data = kwargs["port_steering"]
@@ -73,13 +75,23 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
         if port_id in self.steering_data:
             if rule_id in self.steering_data[port_id]:
                 rule = self.steering_data[port_id].pop(rule_id)
-                self._delete_rule(rule)
+                self._delete_rule(self._get_ofport(port_id), rule)
                 LOG.warn("Deleting steering data that was tracked")
             else:
                 LOG.warn("Deleting untracked steering data for existing port")
 
-    def _prepare_match(self, rule):
+    def _get_ofport(self, port_id):
+        port_data = self.steering_data[port_id]
+        if "target_ofport" not in port_data:
+            port_data["target_ofport"] = self.int_br.get_vif_port_by_id(port_id).ofport
+        LOG.warn("found ofport: " + str(port_data["target_ofport"]))
+        return port_data["target_ofport"]
+
+    def _prepare_match(self, ofport, rule):
         match_kwargs = {}
+
+        match_kwargs["in_port"] = ofport
+
         eth_type = rule["ethertype"]
         match_kwargs["eth_type"] = eth_type
         if eth_type == 0x0800:
@@ -109,7 +121,7 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
 
         return match_kwargs
 
-    def _install_rule(self, rule):
+    def _install_rule(self, ofport, rule):
         (_, ofp, ofpp) = self.int_br._get_dp()
         set_mac = ofpp.OFPActionSetField(eth_dst=rule["overwrite_mac"])
         normal = ofpp.OFPActionOutput(ofp.OFPP_NORMAL, 0)
@@ -117,15 +129,15 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
             [set_mac, normal],
             table_id=TARGET_TABLE,
             priority=TARGET_PRIORITY,
-            **self._prepare_match(rule),
+            **self._prepare_match(ofport, rule),
         )
         LOG.warn("Installed rule: " + str(rule))
 
-    def _delete_rule(self, rule):
+    def _delete_rule(self, ofport, rule):
         self.int_br.uninstall_flows(
             strict=True,
             table_id=TARGET_TABLE,
             priority=TARGET_PRIORITY,
-            **self._prepare_match(rule),
+            **self._prepare_match(ofport, rule),
         )
         LOG.warn("Deleted rule: " + str(rule))
