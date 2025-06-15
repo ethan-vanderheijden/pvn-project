@@ -174,13 +174,12 @@ def teardown_pvn(pvn_id, force=False):
         return
 
     pvn = model.get_pvn(pvn_id)
-    for port in pvn["ports"]:
-        spawn(_delete_port(port))
-        pass
-    for app in pvn["apps"]:
-        spawn(_stop_container(app))
     for steering in pvn["steering"]:
-        spawn(_delete_steering(steering))
+        spawn(_delete_steering, steering)
+    for app in pvn["apps"]:
+        spawn(_stop_container, app)
+    for port in pvn["ports"]:
+        spawn(_delete_port, port)
     model.delete_pvn(pvn_id)
 
 
