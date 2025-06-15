@@ -24,18 +24,21 @@ cfg.CONF.import_opt("api_extensions_path", "neutron.common.config")
 extensions.append_api_extensions_path(port_extensions.__path__)
 
 
-fc_supported_ethertypes = [constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]
+SUPPORTED_ETHERTYPES = [constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]
 
 
 def normalize_ethertype(value):
     if value is None:
         return constants.ETHERTYPE_IP
-    if isinstance(value, str):
-        for ether_type in fc_supported_ethertypes:
-            if value.lower() == ether_type.lower():
-                return ether_type
+    try:
+        ether_type = int(value)
+        if ether_type in SUPPORTED_ETHERTYPES:
+            return ether_type
+    except ValueError:
+        pass
+
     raise UnsupportedEthertype(
-        ethertype=value, values=fc_supported_ethertypes)
+        ethertype=value, values=SUPPORTED_ETHERTYPES)
 
 
 PLUGIN_TYPE = "PORT_STEERING"
