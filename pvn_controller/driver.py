@@ -165,7 +165,8 @@ def initialize_pvn(client_id, pvn_json):
     return pvn_id
 
 
-def teardown_pvn(pvn_id, force=True):
+def teardown_pvn(pvn_id, force=False):
+    print("tearing down", pvn_id)
     prev_status = model.teardown_pvn(pvn_id)
     if not force and prev_status != model.Status.ACTIVE:
         # PVN is still booting up. Initialization process will error out and call
@@ -281,6 +282,7 @@ def _create_steerings(steerings):
 
 
 def _delete_steering(steering_id):
+    print('deleting steering', steering_id)
     config.neutron.delete(f"/port_steerings/{steering_id}")
 
 
@@ -321,7 +323,7 @@ def _start_pvn(pvn_id, pvn_json):
                 else:
                     steerings.append(_prepare_steering(ports, edge))
         steering_ids = _create_steerings(steerings)
-        model.set_steerings(steering_ids)
+        model.set_steerings(pvn_id, steering_ids)
     except Exception:
         teardown_pvn(pvn_id, True)
         raise

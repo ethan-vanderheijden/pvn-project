@@ -10,7 +10,6 @@ from copy import deepcopy
 #   - list of ports parallel to PVN app array
 #   - list of PVN app container ids
 #   - list of port steering rule ids
-#   - error message (if any)
 PVN_DB = {}
 
 _NEXT_ID = 1
@@ -31,7 +30,7 @@ class Status:
 
 def get_pvn_by_client_id(client_id):
     for pvn in PVN_DB.values():
-        if pvn["client_id"] == client_id:
+        if pvn["client_id"] == client_id and pvn["status"] != Status.DELETED:
             return deepcopy(pvn)
     return None
 
@@ -61,26 +60,23 @@ def create_pvn(client_id):
 
 
 def set_ports(pvn_id, port_ids):
+    PVN_DB[pvn_id]["ports"] = deepcopy(port_ids)
     if PVN_DB[pvn_id]["status"] != Status.INIT_PORTS:
         raise PVNInvalidState()
-
-    PVN_DB[pvn_id]["ports"] = deepcopy(port_ids)
     PVN_DB[pvn_id]["status"] = Status.INIT_APPS
 
 
 def set_apps(pvn_id, app_ids):
+    PVN_DB[pvn_id]["apps"] = deepcopy(app_ids)
     if PVN_DB[pvn_id]["status"] != Status.INIT_APPS:
         raise PVNInvalidState()
-
-    PVN_DB[pvn_id]["apps"] = deepcopy(app_ids)
     PVN_DB[pvn_id]["status"] = Status.INIT_STEERING
 
 
 def set_steerings(pvn_id, steerings):
+    PVN_DB[pvn_id]["steering"] = deepcopy(steerings)
     if PVN_DB[pvn_id]["status"] != Status.INIT_STEERING:
         raise PVNInvalidState()
-
-    PVN_DB[pvn_id]["steering"] = deepcopy(steerings)
     PVN_DB[pvn_id]["status"] = Status.ACTIVE
 
 
