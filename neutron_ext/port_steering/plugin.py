@@ -22,18 +22,20 @@ class PortSteeringPlugin(model.PortSteeringDbPlugin):
         self.notifier = AgentRpcClient()
 
     def create_port_steering(self, context, port_steering):
-        steering = super()._create_port_steering(context, port_steering)
-        steering = self._make_port_steering_dict(steering)
+        steering = super().create_port_steering(context, port_steering)
 
-        steering_augmented = steering.copy()
-        dest_port = model_query.get_by_id(
-            context, models_v2.Port, steering_augmented["dest_neutron_port"]
-        )
-        steering_augmented["overwrite_mac"] = dest_port.mac_address
-        LOG.warn("Steering: " + str(steering))
-        self.notifier.notify_steering_updated(context, steering_augmented)
+        dest_mac = None
+        if steering.get("dest_neutron_port"):
+            dest_port = model_query.get_by_id(
+                context, models_v2.Port, steering["dest_neutron_port"]
+            )
+            dest_mac = dest_port.mac_address
+        self.notifier.notify_steering_updated(context, {
+            **steering,
+            "overwrite_mac": dest_mac,
+        })
 
-        return self._make_port_steering_dict(steering)
+        return steering
 
     def delete_port_steering(self, context, id):
         steering = super().delete_port_steering(context, id)
@@ -48,8 +50,11 @@ class PortSteeringPlugin(model.PortSteeringDbPlugin):
                 {"src_neutron_port": ports},
             )
             for steering in data:
-                dest_port = model_query.get_by_id(
-                    context, models_v2.Port, steering["dest_neutron_port"]
-                )
-                steering["overwrite_mac"] = dest_port.mac_address
+                if steering.get("dest_neutron_port"):
+                    dest_port = model_query.get_by_id(
+                        context, models_v2.Port, steering["dest_neutron_port"]
+                    )
+                    steering["overwrite_mac"] = dest_port.mac_address
+                else:
+                    steering["overwrite_mac"] = None
             return data

@@ -31,7 +31,7 @@ class PortSteering(model_base.BASEV2, model_base.HasId, model_base.HasProject):
         # Warning: Agents won't know if steering's destination port was deleted
         # must catch port delete events and send out notification
         sa.ForeignKey("ports.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     src_ip = sa.Column(
         sa.String(db_const.IP_ADDR_FIELD_SIZE),
@@ -91,28 +91,6 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
         except exc.NoResultFound as no_res_found:
             raise ext.PortSteeringNotFound(id=id) from no_res_found
 
-    def _create_port_steering(self, context, data):
-        port_steer = data["port_steering"]
-        src_neutron = port_steer["src_neutron_port"]
-        dest_neutron = port_steer["dest_neutron_port"]
-        with db_api.CONTEXT_WRITER.using(context):
-            self._get_neutron_port(context, src_neutron)
-            self._get_neutron_port(context, dest_neutron)
-
-            port_steer_db = PortSteering(
-                id=uuidutils.generate_uuid(),
-                src_neutron_port=src_neutron,
-                dest_neutron_port=dest_neutron,
-                src_ip=port_steer.get("src_ip"),
-                dest_ip=port_steer.get("dest_ip"),
-                src_port=port_steer.get("src_port"),
-                dest_port=port_steer.get("dest_port"),
-                ethertype=port_steer.get("ethertype"),
-                protocol=port_steer.get("protocol"),
-            )
-            context.session.add(port_steer_db)
-            return port_steer_db
-
     def _get_neutron_port(self, context, id):
         # raises an error if ports don't exist
         try:
@@ -164,8 +142,27 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
         )
 
     def create_port_steering(self, context, port_steering):
-        result = self._create_port_steering(context, port_steering)
-        return self._make_port_steering_dict(result)
+        port_steer = port_steering["port_steering"]
+        src_neutron = port_steer["src_neutron_port"]
+        dest_neutron = port_steer.get("dest_neutron_port")
+        with db_api.CONTEXT_WRITER.using(context):
+            self._get_neutron_port(context, src_neutron)
+            if dest_neutron:
+                self._get_neutron_port(context, dest_neutron)
+
+            port_steer_db = PortSteering(
+                id=uuidutils.generate_uuid(),
+                src_neutron_port=src_neutron,
+                dest_neutron_port=dest_neutron,
+                src_ip=port_steer.get("src_ip"),
+                dest_ip=port_steer.get("dest_ip"),
+                src_port=port_steer.get("src_port"),
+                dest_port=port_steer.get("dest_port"),
+                ethertype=port_steer.get("ethertype"),
+                protocol=port_steer.get("protocol"),
+            )
+            context.session.add(port_steer_db)
+            return self._make_port_steering_dict(port_steer_db)
 
     def update_port_steering(self, context, id, port_steering):
         new_steering = port_steering["port_steering"]

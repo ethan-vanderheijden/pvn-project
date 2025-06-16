@@ -51,6 +51,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "allow_put": False,
             "is_visible": True,
             "validate": {"type:uuid": None},
+            'is_filter': True,
+            'is_sort_key': True,
             "primary_key": True,
         },
         "project_id": {
@@ -59,6 +61,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "is_visible": True,
             "validate": {"type:string": db_const.PROJECT_ID_FIELD_SIZE},
             "required_by_policy": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "src_neutron_port": {
             "allow_post": True,
@@ -66,6 +70,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:uuid_or_none": None},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "dest_neutron_port": {
             "allow_post": True,
@@ -73,6 +79,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:uuid_or_none": None},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "src_ip": {
             "allow_post": True,
@@ -80,6 +88,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:ip_address_or_none": None},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "dest_ip": {
             "allow_post": True,
@@ -87,6 +97,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:ip_address_or_none": None},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "src_port": {
             "allow_post": True,
@@ -94,6 +106,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:port_range": None},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "dest_port": {
             "allow_post": True,
@@ -101,6 +115,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:port_range": None},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "ethertype": {
             "allow_post": True,
@@ -108,6 +124,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "convert_to": normalize_ethertype,
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
         "protocol": {
             "allow_post": True,
@@ -115,6 +133,8 @@ RESOURCE_ATTRIBUTE_MAP = {
             "validate": {"type:range_or_none": [0, 255]},
             "default": None,
             "is_visible": True,
+            'is_filter': True,
+            'is_sort_key': True,
         },
     }
 }

@@ -138,6 +138,11 @@ def initialize_pvn(client_ip, pvn_json):
                     f"Chain with origin {chain["origin"]} has edge with invalid destination specifier: {edge["destination"]}."
                 )
 
+            if chain["origin"] == max_app_index and "destination" not in edge:
+                raise ValidationException(
+                    "Chain with origin at egress gateway must specify destination classifier on each edge."
+                )
+
     if -1 not in existing_origins:
         raise ValidationException(
             "Must have an app chain with an origin at the end user (i.e. origin of -1)."
@@ -247,7 +252,7 @@ def _stop_container(container_id):
     config.zun.containers.stop(container_id, 3)
 
 
-def _prepare_steering(origin, client_ip, ports, edge):
+def _prepare_steering(chain_origin, client_ip, ports, edge):
     def index_to_port(index):
         if index == -1:
             return (cfg.CONF.network.ingress_port, client_ip)
@@ -275,7 +280,7 @@ def _prepare_steering(origin, client_ip, ports, edge):
     if "destination_port" in edge:
         steering["dest_port"] = edge["destination_port"]
 
-    steering["src_ip"] = index_to_port(origin)[1]
+    steering["src_ip"] = index_to_port(chain_origin)[1]
 
     return steering
 
@@ -331,6 +336,10 @@ def _start_pvn(client_ip, pvn_id, pvn_json):
                     )
                 else:
                     steerings.append(_prepare_steering(origin, client_ip, ports, edge))
+
+        for port in ports:
+            steerings.append({"src_neutron_port": port[0]})
+
         steering_ids = _create_steerings(steerings)
         model.set_steerings(pvn_id, steering_ids)
     except Exception:

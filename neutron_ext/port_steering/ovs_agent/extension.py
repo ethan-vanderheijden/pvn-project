@@ -10,7 +10,8 @@ from oslo_config import cfg
 LOG = logging.getLogger(__name__)
 
 TARGET_TABLE = ovs_constants.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE
-TARGET_PRIORITY = 100
+STEERING_PRIORITY = 100
+DROP_PRIORITY = 99
 
 
 class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
@@ -124,21 +125,32 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
 
     def _install_rule(self, ofport, rule):
         (_, ofp, ofpp) = self.int_br._get_dp()
-        set_mac = ofpp.OFPActionSetField(eth_dst=rule["overwrite_mac"])
-        normal = ofpp.OFPActionOutput(ofp.OFPP_NORMAL, 0)
-        self.int_br.install_apply_actions(
-            [set_mac, normal],
-            table_id=TARGET_TABLE,
-            priority=TARGET_PRIORITY,
-            **self._prepare_match(ofport, rule),
-        )
+        if rule.get("overwrite_mac"):
+            set_mac = ofpp.OFPActionSetField(eth_dst=rule["overwrite_mac"])
+            normal = ofpp.OFPActionOutput(ofp.OFPP_NORMAL, 0)
+            self.int_br.install_apply_actions(
+                [set_mac, normal],
+                table_id=TARGET_TABLE,
+                priority=STEERING_PRIORITY,
+                **self._prepare_match(ofport, rule),
+            )
+        else:
+            self.int_br.install_drop(
+                table_id=TARGET_TABLE,
+                priority=DROP_PRIORITY,
+                **self._prepare_match(ofport, rule),
+            )
         LOG.warn("Installed rule: " + str(rule))
 
     def _delete_rule(self, ofport, rule):
+        priority = STEERING_PRIORITY
+        if not rule.get("overwrite_mac"):
+            priority = DROP_PRIORITY
+
         self.int_br.uninstall_flows(
             strict=True,
             table_id=TARGET_TABLE,
-            priority=TARGET_PRIORITY,
+            priority=priority,
             **self._prepare_match(ofport, rule),
         )
         LOG.warn("Deleted rule: " + str(rule))
