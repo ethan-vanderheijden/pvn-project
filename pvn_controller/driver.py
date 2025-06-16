@@ -107,7 +107,7 @@ class ValidationException(Exception):
     pass
 
 
-def initialize_pvn(client_id, pvn_json):
+def initialize_pvn(client_ip, pvn_json):
     try:
         jsonschema.validate(pvn_json, PVN_SCHEMA)
     except jsonschema.ValidationError as ve:
@@ -152,14 +152,14 @@ def initialize_pvn(client_id, pvn_json):
                 f"Some edge in chain with origin {chain["origin"]} will never be traversed."
             )
 
-    if model.get_pvn_by_client_id(client_id):
+    if model.get_pvn_by_client_ip(client_ip):
         raise ValidationException("A PVN for this source IP address already exists.")
 
     # TODO: there is a bug inside OpenStack's zun library that throws an
     # error when searching for an image name with a slash in it
     # _validate_images(pvn_json["apps"])
 
-    pvn_id = model.create_pvn(client_id)
+    pvn_id = model.create_pvn(client_ip)
     spawn(_start_pvn, pvn_id, pvn_json)
 
     return pvn_id

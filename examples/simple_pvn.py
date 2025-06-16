@@ -23,8 +23,5 @@ pvn = {
     ],
 }
 
-response = requests.post(f"{API_URL}/pvn", json={
-    "client_id": "abc123",
-    "pvn": pvn,
-})
+response = requests.post(f"{API_URL}/pvn", json=pvn)
 print(response.text)

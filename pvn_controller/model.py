@@ -5,7 +5,7 @@ from copy import deepcopy
 
 # maps PVN ID to PVN data
 # PVN data includes:
-#   - id of end user
+#   - ip of end user
 #   - status of PVN
 #   - list of ports parallel to PVN app array
 #   - list of PVN app container ids
@@ -28,9 +28,9 @@ class Status:
     DELETED = 6
 
 
-def get_pvn_by_client_id(client_id):
+def get_pvn_by_client_ip(client_ip):
     for pvn in PVN_DB.values():
-        if pvn["client_id"] == client_id and pvn["status"] != Status.DELETED:
+        if pvn["client_ip"] == client_ip and pvn["status"] != Status.DELETED:
             return deepcopy(pvn)
     return None
 
@@ -43,13 +43,13 @@ def get_pvn(pvn_id):
         return None
 
 
-def create_pvn(client_id):
+def create_pvn(client_ip):
     global _NEXT_ID
     new_id = _NEXT_ID
     _NEXT_ID += 1
 
     PVN_DB[new_id] = {
-        "client_id": client_id,
+        "client_ip": client_ip,
         "status": Status.INIT_PORTS,
         "ports": [],
         "apps": [],

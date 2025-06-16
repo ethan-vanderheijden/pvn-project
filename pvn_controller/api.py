@@ -13,12 +13,9 @@ def get_pvn(id):
 @api.route("/pvn", methods=["POST"])
 def create_pvn():
     try:
-        data = request.json
-        if "client_id" not in data or "pvn" not in data:
-            return "Missing client_id or pvn field in data", 400
-        return str(driver.initialize_pvn(data["client_id"], data["pvn"]))
+        return str(driver.initialize_pvn(request.remote_addr, request.json))
     except driver.ValidationException as ve:
-        return ve.message, 400
+        return str(ve), 400
 
 
 @api.route("/pvn/<id>", methods=["DELETE"])
