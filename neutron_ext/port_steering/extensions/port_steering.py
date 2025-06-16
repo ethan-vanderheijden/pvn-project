@@ -23,24 +23,6 @@ service_config.register_service_opts(service_config.SERVICE_OPTS, cfg.CONF)
 cfg.CONF.import_opt("api_extensions_path", "neutron.common.config")
 extensions.append_api_extensions_path(port_extensions.__path__)
 
-
-SUPPORTED_ETHERTYPES = [constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]
-
-
-def normalize_ethertype(value):
-    if value is None:
-        return constants.ETHERTYPE_IP
-    try:
-        ether_type = int(value)
-        if ether_type in SUPPORTED_ETHERTYPES:
-            return ether_type
-    except ValueError:
-        pass
-
-    raise UnsupportedEthertype(
-        ethertype=value, values=SUPPORTED_ETHERTYPES)
-
-
 PLUGIN_TYPE = "PORT_STEERING"
 
 RESOURCE_NAME = "port_steering"
@@ -121,7 +103,7 @@ RESOURCE_ATTRIBUTE_MAP = {
         "ethertype": {
             "allow_post": True,
             "allow_put": False,
-            "convert_to": normalize_ethertype,
+            "validate": {"type:values": [None, constants.ETHERTYPE_IP, constants.ETHERTYPE_IPV6]},
             "default": None,
             "is_visible": True,
             'is_filter': True,
@@ -148,8 +130,12 @@ class PortSteeringPortNotFound(neutron_exc.NotFound):
     message = "Port Steering Neutron Port %(id)s not found."
 
 
-class UnsupportedEthertype(neutron_exc.InvalidInput):
-    message = "Flow Classifier does not support ethertype %(ethertype)s. Supported ethertype values are %(values)s."
+class UnspecifiedEthertype(neutron_exc.InvalidInput):
+    message = "Must specify ethertype if specifying src_ip or dest_ip classifiers."
+
+
+class UnspecifiedProtocol(neutron_exc.InvalidInput):
+    message = "Must specify protocol if specifying src_port or dest_port classifiers."
 
 
 class Port_steering(api_extensions.ExtensionDescriptor):

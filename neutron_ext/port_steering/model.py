@@ -51,7 +51,7 @@ class PortSteering(model_base.BASEV2, model_base.HasId, model_base.HasProject):
     )
     ethertype = sa.Column(
         sa.Integer(),
-        nullable=False,
+        nullable=True,
     )
     protocol = sa.Column(
         sa.Integer(),
@@ -149,6 +149,12 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
             self._get_neutron_port(context, src_neutron)
             if dest_neutron:
                 self._get_neutron_port(context, dest_neutron)
+
+            if (port_steer.get("src_ip") or port_steer.get("dest_ip")) and not port_steer.get("ethertype"):
+                raise ext.UnspecifiedEthertype()
+
+            if (port_steer.get("src_port") or port_steer.get("dest_port")) and not port_steer.get("protocol"):
+                raise ext.UnspecifiedProtocol()
 
             port_steer_db = PortSteering(
                 id=uuidutils.generate_uuid(),

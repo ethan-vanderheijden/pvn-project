@@ -42,10 +42,6 @@ PVN_SCHEMA = {
                                     "type": "number",
                                     "minimum": -1,
                                 },
-                                "ethertype": {
-                                    "type": "string",
-                                    "enum": ["IPv4", "IPv6"],
-                                },
                                 "destination": {
                                     "type": "number",
                                     "minimum": -1,
@@ -68,9 +64,6 @@ PVN_SCHEMA = {
                             },
                             "required": ["from", "to"],
                             "dependentSchemas": {
-                                "destination": {
-                                    "required": ["ethertype"],
-                                },
                                 "source_port": {
                                     "properties": {
                                         "protocol": {
@@ -107,7 +100,7 @@ class ValidationException(Exception):
     pass
 
 
-def initialize_pvn(client_ip, pvn_json):
+def initialize_pvn(client_ip, ethertype, pvn_json):
     try:
         jsonschema.validate(pvn_json, PVN_SCHEMA)
     except jsonschema.ValidationError as ve:
@@ -164,8 +157,8 @@ def initialize_pvn(client_ip, pvn_json):
     # error when searching for an image name with a slash in it
     # _validate_images(pvn_json["apps"])
 
-    pvn_id = model.create_pvn(client_ip)
-    spawn(_start_pvn, client_ip, pvn_id, pvn_json)
+    pvn_id = model.create_pvn(client_ip, ethertype)
+    spawn(_start_pvn, client_ip, ethertype, pvn_id, pvn_json)
 
     return pvn_id
 
@@ -252,7 +245,7 @@ def _stop_container(container_id):
     config.zun.containers.stop(container_id, 3)
 
 
-def _prepare_steering(chain_origin, client_ip, ports, edge):
+def _prepare_steering(chain_origin, client_ip, ethertype, ports, edge):
     def index_to_port(index):
         if index == -1:
             return (cfg.CONF.network.ingress_port, client_ip)
@@ -267,9 +260,9 @@ def _prepare_steering(chain_origin, client_ip, ports, edge):
         "src_neutron_port": src_neutron,
         "dest_neutron_port": dest_neutron,
     }
-    if edge.get("ethertype") == "IPv4":
+    if ethertype == 4:
         steering["ethertype"] = 0x0800
-    elif edge.get("ethertype") == "IPv6":
+    elif ethertype == 6:
         steering["ethertype"] = 0x86DD
     if "destination" in edge:
         steering["dest_ip"] = index_to_port(edge["destination"])[1]
@@ -295,7 +288,7 @@ def _delete_steering(steering_id):
     config.neutron.delete(f"/port_steerings/{steering_id}")
 
 
-def _start_pvn(client_ip, pvn_id, pvn_json):
+def _start_pvn(client_ip, ethertype, pvn_id, pvn_json):
     try:
         ports = _create_ports(pvn_id, len(pvn_json["apps"]), cfg.CONF.network.id)
         model.set_ports(pvn_id, [port[0] for port in ports])
@@ -310,32 +303,7 @@ def _start_pvn(client_ip, pvn_id, pvn_json):
         for chain in pvn_json["chains"]:
             origin = chain["origin"]
             for edge in chain["edges"]:
-                if "ethertype" not in edge:
-                    # if unspecified, create a steering for both ipv4 and ipv6
-                    steerings.append(
-                        _prepare_steering(
-                            origin,
-                            client_ip,
-                            ports,
-                            {
-                                **edge,
-                                "ethertype": "IPv4",
-                            },
-                        )
-                    )
-                    steerings.append(
-                        _prepare_steering(
-                            origin,
-                            client_ip,
-                            ports,
-                            {
-                                **edge,
-                                "ethertype": "IPv6",
-                            },
-                        )
-                    )
-                else:
-                    steerings.append(_prepare_steering(origin, client_ip, ports, edge))
+                steerings.append(_prepare_steering(origin, client_ip, ethertype, ports, edge))
 
         for port in ports:
             steerings.append({"src_neutron_port": port[0]})

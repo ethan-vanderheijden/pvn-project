@@ -32,4 +32,8 @@ response = requests.post(f"{API_URL}/pvn", json={
     "client_ip": sys.argv[1],
     "pvn": pvn,
 })
-print("ID of new PVN:", response.text)
+
+try:
+    print("ID of new PVN:", int(response.text))
+except ValueError:
+    print(response.text)

@@ -89,7 +89,21 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
         LOG.warn("found ofport: " + str(port_data["target_ofport"]))
         return port_data["target_ofport"]
 
-    def _prepare_match(self, ofport, rule):
+    def _prepare_matches(self, ofport, rule):
+        if not rule.get("ethertype"):
+            # If ethertype is not specified, build explicit rules for IPv4 and IPv6
+            # avoids accidentally steering L2 packets (e.g. ARP)
+            return [
+                self._prepare_matches(ofport, {
+                    **rule,
+                    "ethertype": 0x0800,
+                })[0],
+                self._prepare_matches(ofport, {
+                    **rule,
+                    "ethertype": 0x86DD,
+                })[0],
+            ]
+
         match_kwargs = {}
 
         match_kwargs["in_port"] = ofport
@@ -121,25 +135,28 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
                 if rule.get("dest_port"):
                     match_kwargs["udp_dst"] = rule.get("dest_port")
 
-        return match_kwargs
+        return [match_kwargs]
 
     def _install_rule(self, ofport, rule):
         (_, ofp, ofpp) = self.int_br._get_dp()
         if rule.get("overwrite_mac"):
             set_mac = ofpp.OFPActionSetField(eth_dst=rule["overwrite_mac"])
             normal = ofpp.OFPActionOutput(ofp.OFPP_NORMAL, 0)
-            self.int_br.install_apply_actions(
-                [set_mac, normal],
-                table_id=TARGET_TABLE,
-                priority=STEERING_PRIORITY,
-                **self._prepare_match(ofport, rule),
-            )
+
+            for match in self._prepare_matches(ofport, rule):
+                self.int_br.install_apply_actions(
+                    [set_mac, normal],
+                    table_id=TARGET_TABLE,
+                    priority=STEERING_PRIORITY,
+                    **match,
+                )
         else:
-            self.int_br.install_drop(
-                table_id=TARGET_TABLE,
-                priority=DROP_PRIORITY,
-                **self._prepare_match(ofport, rule),
-            )
+            for match in self._prepare_matches(ofport, rule):
+                self.int_br.install_drop(
+                    table_id=TARGET_TABLE,
+                    priority=DROP_PRIORITY,
+                    **match,
+                )
         LOG.warn("Installed rule: " + str(rule))
 
     def _delete_rule(self, ofport, rule):
@@ -147,10 +164,11 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
         if not rule.get("overwrite_mac"):
             priority = DROP_PRIORITY
 
-        self.int_br.uninstall_flows(
-            strict=True,
-            table_id=TARGET_TABLE,
-            priority=priority,
-            **self._prepare_match(ofport, rule),
-        )
+        for match in self._prepare_matches(ofport, rule):
+            self.int_br.uninstall_flows(
+                strict=True,
+                table_id=TARGET_TABLE,
+                priority=priority,
+                **match,
+            )
         LOG.warn("Deleted rule: " + str(rule))

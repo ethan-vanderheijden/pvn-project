@@ -1,3 +1,4 @@
+import ipaddress
 from flask import Blueprint, request
 
 from pvn_controller import driver, model
@@ -16,9 +17,10 @@ def create_pvn():
         data = request.json
         if "client_ip" not in data or "pvn" not in data:
             return "client_ip or pvn field missing in request", 400
-        return str(driver.initialize_pvn(data["client_ip"], data["pvn"]))
-    except driver.ValidationException as ve:
-        return str(ve), 400
+        address = ipaddress.ip_address(data["client_ip"])
+        return str(driver.initialize_pvn(str(address), address.version, data["pvn"]))
+    except Exception as e:
+        return str(e), 400
 
 
 @api.route("/pvn/<id>", methods=["DELETE"])

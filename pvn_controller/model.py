@@ -6,6 +6,7 @@ from copy import deepcopy
 # maps PVN ID to PVN data
 # PVN data includes:
 #   - ip of end user
+#   - ethertype of pvn (4 or 6)
 #   - status of PVN
 #   - list of ports parallel to PVN app array
 #   - list of PVN app container ids
@@ -51,13 +52,14 @@ def get_pvn_status(pvn_id):
         return None
 
 
-def create_pvn(client_ip):
+def create_pvn(client_ip, ethertype):
     global _NEXT_ID
     new_id = _NEXT_ID
     _NEXT_ID += 1
 
     PVN_DB[new_id] = {
         "client_ip": client_ip,
+        "ethertype": ethertype,
         "status": Status.INIT_PORTS,
         "ports": [],
         "apps": [],
