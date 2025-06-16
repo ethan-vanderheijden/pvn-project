@@ -133,7 +133,7 @@ def initialize_pvn(client_ip, pvn_json):
                 raise ValidationException(
                     f"Chain with origin {chain["origin"]} has edge with invalid to index: {edge["to"]}."
                 )
-            if "destination" in edge and edge["destination"] > max_app_index:
+            if "destination" in edge and edge["destination"] >= max_app_index:
                 raise ValidationException(
                     f"Chain with origin {chain["origin"]} has edge with invalid destination specifier: {edge["destination"]}."
                 )
@@ -160,15 +160,18 @@ def initialize_pvn(client_ip, pvn_json):
     # _validate_images(pvn_json["apps"])
 
     pvn_id = model.create_pvn(client_ip)
-    spawn(_start_pvn, pvn_id, pvn_json)
+    spawn(_start_pvn, client_ip, pvn_id, pvn_json)
 
     return pvn_id
 
 
 def teardown_pvn(pvn_id, force=False):
-    print("tearing down", pvn_id)
-    prev_status = model.teardown_pvn(pvn_id)
-    if not force and prev_status != model.Status.ACTIVE:
+    status = model.get_pvn_status(pvn_id)
+    if status is None or status == model.Status.DELETED:
+        return
+
+    model.teardown_pvn(pvn_id)
+    if not force and status != model.Status.ACTIVE:
         # PVN is still booting up. Initialization process will error out and call
         # teardown_pvn again when it's ready
         return
@@ -244,17 +247,17 @@ def _stop_container(container_id):
     config.zun.containers.stop(container_id, 3)
 
 
-def _prepare_steering(ports, edge):
+def _prepare_steering(origin, client_ip, ports, edge):
     def index_to_port(index):
         if index == -1:
-            return cfg.CONF.network.ingress_port
+            return (cfg.CONF.network.ingress_port, client_ip)
         elif index == len(ports):
-            return cfg.CONF.network.egress_port
+            return (cfg.CONF.network.egress_port, None)
         else:
-            return ports[index][0]
+            return ports[index]
 
-    src_neutron = index_to_port(edge["from"])
-    dest_neutron = index_to_port(edge["to"])
+    src_neutron = index_to_port(edge["from"])[0]
+    dest_neutron = index_to_port(edge["to"])[0]
     steering = {
         "src_neutron_port": src_neutron,
         "dest_neutron_port": dest_neutron,
@@ -271,6 +274,9 @@ def _prepare_steering(ports, edge):
         steering["src_port"] = edge["source_port"]
     if "destination_port" in edge:
         steering["dest_port"] = edge["destination_port"]
+
+    steering["src_ip"] = index_to_port(origin)[1]
+
     return steering
 
 
@@ -281,11 +287,10 @@ def _create_steerings(steerings):
 
 
 def _delete_steering(steering_id):
-    print('deleting steering', steering_id)
     config.neutron.delete(f"/port_steerings/{steering_id}")
 
 
-def _start_pvn(pvn_id, pvn_json):
+def _start_pvn(client_ip, pvn_id, pvn_json):
     try:
         ports = _create_ports(pvn_id, len(pvn_json["apps"]), cfg.CONF.network.id)
         model.set_ports(pvn_id, [port[0] for port in ports])
@@ -298,11 +303,14 @@ def _start_pvn(pvn_id, pvn_json):
 
         steerings = []
         for chain in pvn_json["chains"]:
+            origin = chain["origin"]
             for edge in chain["edges"]:
                 if "ethertype" not in edge:
                     # if unspecified, create a steering for both ipv4 and ipv6
                     steerings.append(
                         _prepare_steering(
+                            origin,
+                            client_ip,
                             ports,
                             {
                                 **edge,
@@ -312,6 +320,8 @@ def _start_pvn(pvn_id, pvn_json):
                     )
                     steerings.append(
                         _prepare_steering(
+                            origin,
+                            client_ip,
                             ports,
                             {
                                 **edge,
@@ -320,7 +330,7 @@ def _start_pvn(pvn_id, pvn_json):
                         )
                     )
                 else:
-                    steerings.append(_prepare_steering(ports, edge))
+                    steerings.append(_prepare_steering(origin, client_ip, ports, edge))
         steering_ids = _create_steerings(steerings)
         model.set_steerings(pvn_id, steering_ids)
     except Exception:

@@ -43,6 +43,14 @@ def get_pvn(pvn_id):
         return None
 
 
+def get_pvn_status(pvn_id):
+    data = PVN_DB.get(pvn_id)
+    if data:
+        return data["status"]
+    else:
+        return None
+
+
 def create_pvn(client_ip):
     global _NEXT_ID
     new_id = _NEXT_ID
@@ -81,9 +89,7 @@ def set_steerings(pvn_id, steerings):
 
 
 def teardown_pvn(pvn_id):
-    old_status = PVN_DB[pvn_id]["status"]
     PVN_DB[pvn_id]["status"] = Status.TEARING_DOWN
-    return old_status
 
 
 def delete_pvn(pvn_id):
