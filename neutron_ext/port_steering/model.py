@@ -129,6 +129,23 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
         page_reverse=False,
     ):
         marker_obj = db_utils.get_marker_obj(self, context, ext.RESOURCE_NAME, limit, marker)
+
+        def should_convert(item):
+            return isinstance(item, str) and (item.lower() == "null" or item.lower() == "none")
+
+        if filters:
+            for key, value in filters.items():
+                if should_convert(value):
+                    filters[key] = None
+                elif isinstance(value, list):
+                    converted = []
+                    for candidate in value:
+                        if should_convert(candidate):
+                            converted.append(None)
+                        else:
+                            converted.append(candidate)
+                    filters[key] = converted
+
         return model_query.get_collection(
             context,
             PortSteering,
