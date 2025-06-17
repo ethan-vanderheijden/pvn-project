@@ -24,14 +24,32 @@ pvn = {
                     "to": 1,
                 },
             ],
-        }
+        },
+        {
+            "origin": 1,
+            "edges": [
+                {
+                    "from": 1,
+                    "to": 0,
+                    "destination": -1,
+                },
+                {
+                    "from": 0,
+                    "to": -1,
+                    "destination": -1,
+                },
+            ],
+        },
     ],
 }
 
-response = requests.post(f"{API_URL}/pvn", json={
-    "client_ip": sys.argv[1],
-    "pvn": pvn,
-})
+response = requests.post(
+    f"{API_URL}/pvn",
+    json={
+        "client_ip": sys.argv[1],
+        "pvn": pvn,
+    },
+)
 
 try:
     print("ID of new PVN:", int(response.text))
