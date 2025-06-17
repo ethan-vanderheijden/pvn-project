@@ -193,7 +193,7 @@ def _is_single_origin_dag(start, visited_nodes, edges, visited_edges):
     for i, edge in enumerate(edges):
         if edge["from"] == start:
             visited_edges[i] = True
-            if not _is_single_origin_dag(edge["to"], visited_nodes, edges, visited_edges):
+            if not _is_single_origin_dag(edge["to"], visited_nodes.copy(), edges, visited_edges):
                 return False
     return True
 
@@ -229,8 +229,8 @@ def _delete_port(port_id):
     config.neutron.delete_port(port_id)
 
 
-def _create_container(port, image):
-    result = config.zun.containers.run(image=image, nets=[{"port": port}], auto_remove=True)
+def _create_container(port, image, *args):
+    result = config.zun.containers.run(image=image, nets=[{"port": port}], command=args, auto_remove=False)
     uuid = result.uuid
     for i in range(0, 20):
         status = config.zun.containers.get(uuid).status.lower()
@@ -295,7 +295,7 @@ def _start_pvn(client_ip, ethertype, pvn_id, pvn_json):
 
         app_threads = []
         for i, app in enumerate(pvn_json["apps"]):
-            app_threads.append(spawn(_create_container, ports[i][0], app))
+            app_threads.append(spawn(_create_container, ports[i][0], app, client_ip))
         app_ids = [thread.wait() for thread in app_threads]
         model.set_apps(pvn_id, app_ids)
 

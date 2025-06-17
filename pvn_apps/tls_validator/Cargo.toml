@@ -1,0 +1,13 @@
+[package]
+name = "tls_validator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustls = { git = "https://github.com/ethan-vanderheijden/rustls" }
+webpki-roots = "1.0.0"
+tracing = "0.1"
+colored = "3.0"
+anyhow = "1.0"
+pnet = "0.35"
+tracing-subscriber = "0.3"

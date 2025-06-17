@@ -26,12 +26,26 @@ pvn = {
             ],
         },
         {
+            "origin": 0,
+            "edges": [
+                {
+                    "from": 0,
+                    "to": 1,
+                },
+            ],
+        },
+        {
             "origin": 1,
             "edges": [
                 {
                     "from": 1,
                     "to": 0,
                     "destination": -1,
+                },
+                {
+                    "from": 1,
+                    "to": 0,
+                    "destination": 0,
                 },
                 {
                     "from": 0,
