@@ -16,6 +16,7 @@ use std::{
 use tls_validator::{TcpFlow, TlsvMiddlebox, TlsvResult};
 use tracing::Level;
 
+const BUFFER_SIZE: usize = 16384;
 const IPV6_HEADER_LEN: usize = 40;
 const NEW_PACKET_TTL: u8 = 64;
 
@@ -61,6 +62,8 @@ fn process_ip(interface: &NetworkInterface, client_ip: IpAddr, is_ipv4: bool) ->
     };
 
     let config = Config {
+        write_buffer_size: BUFFER_SIZE,
+        read_buffer_size: BUFFER_SIZE,
         channel_type: ChannelType::Layer3(ethertype),
         ..Default::default()
     };
