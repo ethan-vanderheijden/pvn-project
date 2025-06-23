@@ -323,12 +323,13 @@ impl TlsvMiddlebox {
         flow: TcpFlow,
         is_outgoing: bool,
     ) -> TlsvResult<'static> {
+        let src_ip = flow.source_ip.clone();
         let dest_ip = flow.dest_ip.clone();
         if let Ok(flow_state) = self.update_flow_state(packet, flow, is_outgoing) {
             let valid;
             let rst_seqno;
             if is_outgoing {
-                valid = process_outgoing_tcp(packet, flow_state, dest_ip);
+                valid = process_outgoing_tcp(packet, flow_state, dest_ip.clone());
                 rst_seqno = flow_state.client_expected_seqno.unwrap_or(0);
             } else {
                 valid = process_incoming_tcp(packet, flow_state);
@@ -340,10 +341,19 @@ impl TlsvMiddlebox {
                 let mut packet_rst = MutableTcpPacket::owned(packet_rst_data).unwrap();
                 packet_rst.set_flags(packet_rst.get_flags() | TcpFlags::RST);
 
-                let return_packet = protocol::generate_return_rst(packet, rst_seqno);
+                let mut return_packet = protocol::generate_return_rst(packet, rst_seqno);
+
+                if is_outgoing {
+                    protocol::set_tcp_checksum(&mut packet_rst, src_ip, dest_ip);
+                    protocol::set_tcp_checksum(&mut return_packet, src_ip, dest_ip);
+                } else {
+                    protocol::set_tcp_checksum(&mut packet_rst, dest_ip, src_ip);
+                    protocol::set_tcp_checksum(&mut return_packet, dest_ip, src_ip);
+                }
+
                 return TlsvResult::Invalid {
                     forward_packet: packet_rst.consume_to_immutable(),
-                    return_packet: return_packet,
+                    return_packet: return_packet.consume_to_immutable(),
                 };
             }
         } else {

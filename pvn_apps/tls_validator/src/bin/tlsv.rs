@@ -2,19 +2,19 @@ use anyhow::{Result, anyhow};
 use pnet::{
     datalink::{self, Channel::Ethernet, ChannelType, Config, NetworkInterface},
     packet::{
-        Packet, PacketSize,
+        Packet,
         ip::IpNextHeaderProtocols,
-        ipv4::{Ipv4Packet, MutableIpv4Packet},
+        ipv4::{self, Ipv4Packet, MutableIpv4Packet},
         ipv6::{Ipv6Packet, MutableIpv6Packet},
         tcp::TcpPacket,
     },
 };
 use std::{
-    cmp, env,
+    env,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 use tls_validator::{TcpFlow, TlsvMiddlebox, TlsvResult};
-use tracing::{info, Level};
+use tracing::{Level, info};
 
 const IPV6_HEADER_LEN: usize = 40;
 const NEW_PACKET_TTL: u8 = 64;
@@ -29,20 +29,27 @@ macro_rules! extract {
 }
 
 fn prepare_ipv4_packet(packet_buf: &mut [u8], src: Ipv4Addr, dest: Ipv4Addr, tcp: &TcpPacket) {
+    let packet_len = packet_buf.len() as u16;
     let mut packet = MutableIpv4Packet::new(packet_buf).unwrap();
+    packet.set_version(4);
     packet.set_source(src);
     packet.set_destination(dest);
     packet.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
     packet.set_ttl(NEW_PACKET_TTL);
+    packet.set_header_length((Ipv4Packet::minimum_packet_size() / 4) as u8);
+    packet.set_total_length(packet_len);
     packet.set_payload(tcp.packet());
+    packet.set_checksum(ipv4::checksum(&packet.to_immutable()));
 }
 
 fn prepare_ipv6_packet(packet_buf: &mut [u8], src: Ipv6Addr, dest: Ipv6Addr, tcp: &TcpPacket) {
     let mut packet = MutableIpv6Packet::new(packet_buf).unwrap();
+    packet.set_version(6);
     packet.set_source(src);
     packet.set_destination(dest);
     packet.set_next_header(IpNextHeaderProtocols::Tcp);
     packet.set_hop_limit(NEW_PACKET_TTL);
+    packet.set_payload_length(tcp.packet().len() as u16);
     packet.set_payload(tcp.packet());
 }
 
@@ -111,50 +118,65 @@ fn process_ip(interface: &NetworkInterface, client_ip: IpAddr, is_ipv4: bool) ->
                         return_packet,
                     }) = result
                     {
-                        let header_size =
-                            cmp::max(Ipv4Packet::minimum_packet_size(), IPV6_HEADER_LEN);
-                        tx.build_and_send(
-                            1,
-                            header_size + forward_packet.packet_size(),
-                            &mut |buf| {
-                                if is_ipv4 {
+                        if is_ipv4 {
+                            tx.build_and_send(
+                                1,
+                                Ipv4Packet::minimum_packet_size() + forward_packet.packet().len(),
+                                &mut |buf| {
                                     prepare_ipv4_packet(
                                         buf,
                                         extract!(src_ip, IpAddr::V4).unwrap(),
                                         extract!(dest_ip, IpAddr::V4).unwrap(),
                                         &forward_packet,
                                     );
-                                } else {
-                                    prepare_ipv6_packet(
-                                        buf,
-                                        extract!(dest_ip, IpAddr::V6).unwrap(),
-                                        extract!(src_ip, IpAddr::V6).unwrap(),
-                                        &forward_packet,
-                                    );
-                                }
-                            },
-                        );
-                        tx.build_and_send(
-                            1,
-                            header_size + return_packet.packet_size(),
-                            &mut |buf| {
-                                if is_ipv4 {
+                                },
+                            )
+                            .expect("No buffer left")
+                            .expect("Failed to send packet");
+                            tx.build_and_send(
+                                1,
+                                Ipv4Packet::minimum_packet_size() + return_packet.packet().len(),
+                                &mut |buf| {
                                     prepare_ipv4_packet(
                                         buf,
-                                        extract!(src_ip, IpAddr::V4).unwrap(),
                                         extract!(dest_ip, IpAddr::V4).unwrap(),
+                                        extract!(src_ip, IpAddr::V4).unwrap(),
                                         &return_packet,
                                     );
-                                } else {
+                                },
+                            )
+                            .expect("No buffer left")
+                            .expect("Failed to send packet");
+                        } else {
+                            tx.build_and_send(
+                                1,
+                                Ipv6Packet::minimum_packet_size() + forward_packet.packet().len(),
+                                &mut |buf| {
                                     prepare_ipv6_packet(
                                         buf,
                                         extract!(src_ip, IpAddr::V6).unwrap(),
                                         extract!(dest_ip, IpAddr::V6).unwrap(),
+                                        &forward_packet,
+                                    );
+                                },
+                            )
+                            .expect("No buffer left")
+                            .expect("Failed to send packet");
+                            tx.build_and_send(
+                                1,
+                                Ipv6Packet::minimum_packet_size() + return_packet.packet().len(),
+                                &mut |buf| {
+                                    prepare_ipv6_packet(
+                                        buf,
+                                        extract!(dest_ip, IpAddr::V6).unwrap(),
+                                        extract!(src_ip, IpAddr::V6).unwrap(),
                                         &return_packet,
                                     );
-                                }
-                            },
-                        );
+                                },
+                            )
+                            .expect("No buffer left")
+                            .expect("Failed to send packet");
+                        }
                         continue;
                     }
                 }
