@@ -230,7 +230,7 @@ def _delete_port(port_id):
 
 
 def _create_container(port, image, *args):
-    result = config.zun.containers.run(image=image, nets=[{"port": port}], command=args, auto_remove=False)
+    result = config.zun.containers.run(image=image, nets=[{"port": port}], command=args, auto_remove=True)
     uuid = result.uuid
     for i in range(0, 20):
         status = config.zun.containers.get(uuid).status.lower()
