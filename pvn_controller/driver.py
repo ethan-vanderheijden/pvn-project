@@ -218,10 +218,8 @@ def _create_ports(pvn_id, count, network):
                 "network_id": network,
             }
         )
-    print("SAW THISSSS")
     result = config.neutron.create_port(body)
     # TODO: support multiple ip address per port (e.g. IPv6 and IPv4)
-    print(result)
     return [(port["id"], port["fixed_ips"][0]["ip_address"]) for port in result["ports"]]
 
 
@@ -234,7 +232,6 @@ def _create_container(port, image, *args):
     uuid = result.uuid
     for i in range(0, 20):
         status = config.zun.containers.get(uuid).status.lower()
-        print("Curr status:", status)
         if status != "creating" and status != "created":
             return uuid
         sleep(0.1)

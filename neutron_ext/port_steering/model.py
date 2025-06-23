@@ -69,7 +69,6 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
         def _cascade_delete_port(resource, event, trigger, payload=None):
             port_id = payload.resource_id
             steerings = []
-            LOG.warn("deleting port: " + port_id)
             with db_api.CONTEXT_WRITER.using(payload.context):
                 steerings = model_query.get_collection(
                     payload.context,
@@ -77,8 +76,6 @@ class PortSteeringDbPlugin(ext.PortSteeringPluginBase):
                     self._make_port_steering_dict,
                     {"dest_neutron_port": [port_id]},
                 )
-                LOG.warn("Heard delete for port: " + str(port_id))
-                LOG.warn("Associated port steerings: " + str(steerings))
 
             for steering in steerings:
                 self.delete_port_steering(payload.context, steering["id"])

@@ -14,7 +14,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 use tls_validator::{TcpFlow, TlsvMiddlebox, TlsvResult};
-use tracing::{Level, info};
+use tracing::Level;
 
 const IPV6_HEADER_LEN: usize = 40;
 const NEW_PACKET_TTL: u8 = 64;
@@ -80,7 +80,6 @@ fn process_ip(interface: &NetworkInterface, client_ip: IpAddr, is_ipv4: bool) ->
                 let next_protocol;
                 let payload = if is_ipv4 {
                     let ip_packet = Ipv4Packet::new(packet).unwrap();
-                    info!("Got packet: {:#?}", ip_packet);
                     src_ip = IpAddr::V4(ip_packet.get_source());
                     dest_ip = IpAddr::V4(ip_packet.get_destination());
                     next_protocol = ip_packet.get_next_level_protocol();
@@ -88,7 +87,6 @@ fn process_ip(interface: &NetworkInterface, client_ip: IpAddr, is_ipv4: bool) ->
                         ..ip_packet.get_total_length() as usize]
                 } else {
                     let ip_packet = Ipv6Packet::new(packet).unwrap();
-                    info!("Got packet: {:#?}", ip_packet);
                     src_ip = IpAddr::V6(ip_packet.get_source());
                     dest_ip = IpAddr::V6(ip_packet.get_destination());
                     next_protocol = ip_packet.get_next_header();
@@ -111,7 +109,6 @@ fn process_ip(interface: &NetworkInterface, client_ip: IpAddr, is_ipv4: bool) ->
                     } else {
                         None
                     };
-                    info!("Processing result: {:?}", result);
 
                     if let Some(TlsvResult::Invalid {
                         forward_packet,
