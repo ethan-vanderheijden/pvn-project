@@ -5,12 +5,16 @@ import requests
 
 API_URL = "http://controller:11133/v1"
 
-if len(sys.argv) != 2:
-    print("Usage: ./simple_pvn <client_ip>")
+if len(sys.argv) < 2 or len(sys.argv) > 3:
+    print('Usage: ./simple_pvn <client_ip> [image = "ethanvdh/ubuntu-full"]')
     sys.exit(1)
 
+image = "ethanvdh/ubuntu-full"
+if len(sys.argv) == 3:
+    image = sys.argv[2]
+
 pvn = {
-    "apps": ["ethanvdh/ubuntu-full"],
+    "apps": [image],
     "chains": [
         {
             "origin": -1,
