@@ -4,9 +4,13 @@ mod tcp_buffer;
 use anyhow::Result;
 use colored::Colorize;
 use core::panic;
-use pnet::packet::{
-    Packet,
-    tcp::{MutableTcpPacket, TcpFlags, TcpPacket},
+use pnet::{
+    packet::{
+        Packet,
+        ip::IpNextHeaderProtocols,
+        tcp::{MutableTcpPacket, TcpFlags, TcpPacket},
+    },
+    util,
 };
 use rustls::{
     ProtocolVersion, RootCertStore,
@@ -343,12 +347,51 @@ impl TlsvMiddlebox {
 
                 let mut return_packet = protocol::generate_return_rst(packet, rst_seqno);
 
-                if is_outgoing {
-                    protocol::set_tcp_checksum(&mut packet_rst, src_ip, dest_ip);
-                    protocol::set_tcp_checksum(&mut return_packet, src_ip, dest_ip);
+                let (src, dest) = if is_outgoing {
+                    (src_ip, dest_ip)
                 } else {
-                    protocol::set_tcp_checksum(&mut packet_rst, dest_ip, src_ip);
-                    protocol::set_tcp_checksum(&mut return_packet, dest_ip, src_ip);
+                    (dest_ip, src_ip)
+                };
+                match (src, dest) {
+                    (IpAddr::V4(src), IpAddr::V4(dest)) => {
+                        packet_rst.set_checksum(util::ipv4_checksum(
+                            packet_rst.packet(),
+                            8,
+                            &[],
+                            &src,
+                            &dest,
+                            IpNextHeaderProtocols::Tcp,
+                        ));
+                        return_packet.set_checksum(util::ipv4_checksum(
+                            return_packet.packet(),
+                            8,
+                            &[],
+                            &dest,
+                            &src,
+                            IpNextHeaderProtocols::Tcp,
+                        ));
+                    }
+                    (IpAddr::V6(src), IpAddr::V6(dest)) => {
+                        packet_rst.set_checksum(util::ipv6_checksum(
+                            packet_rst.packet(),
+                            8,
+                            &[],
+                            &src,
+                            &dest,
+                            IpNextHeaderProtocols::Tcp,
+                        ));
+                        return_packet.set_checksum(util::ipv6_checksum(
+                            return_packet.packet(),
+                            8,
+                            &[],
+                            &dest,
+                            &src,
+                            IpNextHeaderProtocols::Tcp,
+                        ));
+                    },
+                    _ => {
+                        panic!("Both IPs in flow should be of the same type");
+                    }
                 }
 
                 return TlsvResult::Invalid {
