@@ -2,7 +2,7 @@ import jsonschema
 from eventlet.greenthread import spawn, sleep
 from oslo_config import cfg
 
-from pvn_controller import model, config
+from controller import model, config
 
 PVN_SCHEMA = {
     "title": "PVN",

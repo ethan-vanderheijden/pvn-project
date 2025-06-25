@@ -1,7 +1,7 @@
 import ipaddress
 from flask import Blueprint, request
 
-from pvn_controller import driver, model
+from controller import driver, model
 
 api = Blueprint("api", __name__, url_prefix="/v1")
 

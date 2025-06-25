@@ -1,8 +1,8 @@
 from flask import Flask
 from oslo_config import cfg
 
-from pvn_controller.api import api
-import pvn_controller.config as config
+from controller.api import api
+import controller.config as config
 
 
 def _install_gateway_steering(gateway):
