@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [ "tls_validator"]
+members = [ "bittorrent_offload", "tls_validator"]
 
 [workspace.package]
 version = "0.1.0"
