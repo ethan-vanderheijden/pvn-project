@@ -5,6 +5,7 @@ WORKDIR /pvn
 COPY Cargo.toml Cargo.toml
 COPY Cargo.lock Cargo.lock
 COPY tls_validator tls_validator
+COPY bittorrent_offload bittorrent_offload
 RUN cargo install --path tls_validator
 RUN cargo install --path bittorrent_offload
 
