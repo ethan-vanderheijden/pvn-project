@@ -2,7 +2,7 @@ mod routes;
 
 use axum::{Extension, Router};
 use librqbit::{Api, Session};
-use std::{env, fs, sync::Arc};
+use std::{env, fs, io, sync::Arc};
 
 use crate::routes::TorrentState;
 
@@ -17,7 +17,11 @@ async fn main() {
     let app = Router::new();
 
     let torrent_file_folder = format!("{}/torrent_files", output_folder);
-    fs::remove_dir_all(&output_folder).expect("Couldn't clear output folder.");
+    if let Err(error) = fs::remove_dir_all(&output_folder) {
+        if !matches!(error.kind(), io::ErrorKind::NotFound) {
+            panic!("Failed to clear output directory: {}", error);
+        }
+    }
     fs::create_dir_all(&torrent_file_folder).expect("Couldn't create torrent file folder.");
     let state = Arc::new(TorrentState::new(torrent_api, torrent_file_folder));
     let app = routes::register_routes(app).layer(Extension(state));
