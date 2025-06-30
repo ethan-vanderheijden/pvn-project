@@ -180,7 +180,7 @@ def teardown_pvn(pvn_id, force=False):
     for app in pvn["apps"]:
         spawn(_stop_container, app)
     for port in pvn["ports"]:
-        spawn(_delete_port, port)
+        spawn(_delete_port, port["id"])
     model.delete_pvn(pvn_id)
 
 
@@ -220,7 +220,9 @@ def _create_ports(pvn_id, count, network):
         )
     result = config.neutron.create_port(body)
     # TODO: support multiple ip address per port (e.g. IPv6 and IPv4)
-    return [(port["id"], port["fixed_ips"][0]["ip_address"]) for port in result["ports"]]
+    return [
+        {"id": port["id"], "ip": port["fixed_ips"][0]["ip_address"]} for port in result["ports"]
+    ]
 
 
 def _delete_port(port_id):
@@ -228,31 +230,33 @@ def _delete_port(port_id):
 
 
 def _create_container(port, image, *args):
-    result = config.zun.containers.run(image=image, nets=[{"port": port}], command=args, auto_remove=True)
+    result = config.zun.containers.run(
+        image=image, nets=[{"port": port}], command=args, auto_remove=True
+    )
     uuid = result.uuid
     for i in range(0, 20):
         status = config.zun.containers.get(uuid).status.lower()
         if status != "creating" and status != "created":
-            return uuid
+            return {"app": image, "app_id": uuid, "port_id": port}
         sleep(0.1)
     raise Exception("Container failed to start.")
 
 
-def _stop_container(container_id):
-    config.zun.containers.stop(container_id, 3)
+def _stop_container(app_data):
+    config.zun.containers.stop(app_data["app_id"], 3)
 
 
 def _prepare_steering(chain_origin, client_ip, ethertype, ports, edge):
     def index_to_port(index):
         if index == -1:
-            return (cfg.CONF.network.ingress_port, client_ip)
+            return {"id": cfg.CONF.network.ingress_port, "ip": client_ip}
         elif index == len(ports):
-            return (cfg.CONF.network.egress_port, None)
+            return {"id": cfg.CONF.network.egress_port, "ip": None}
         else:
             return ports[index]
 
-    src_neutron = index_to_port(edge["from"])[0]
-    dest_neutron = index_to_port(edge["to"])[0]
+    src_neutron = index_to_port(edge["from"])["id"]
+    dest_neutron = index_to_port(edge["to"])["id"]
     steering = {
         "src_neutron_port": src_neutron,
         "dest_neutron_port": dest_neutron,
@@ -262,7 +266,7 @@ def _prepare_steering(chain_origin, client_ip, ethertype, ports, edge):
     elif ethertype == 6:
         steering["ethertype"] = 0x86DD
     if "destination" in edge:
-        steering["dest_ip"] = index_to_port(edge["destination"])[1]
+        steering["dest_ip"] = index_to_port(edge["destination"])["ip"]
     if "protocol" in edge:
         steering["protocol"] = edge["protocol"]
     if "source_port" in edge:
@@ -270,7 +274,7 @@ def _prepare_steering(chain_origin, client_ip, ethertype, ports, edge):
     if "destination_port" in edge:
         steering["dest_port"] = edge["destination_port"]
 
-    steering["src_ip"] = index_to_port(chain_origin)[1]
+    steering["src_ip"] = index_to_port(chain_origin)["ip"]
 
     return steering
 
@@ -288,11 +292,11 @@ def _delete_steering(steering_id):
 def _start_pvn(client_ip, ethertype, pvn_id, pvn_json):
     try:
         ports = _create_ports(pvn_id, len(pvn_json["apps"]), cfg.CONF.network.id)
-        model.set_ports(pvn_id, [port[0] for port in ports])
+        model.set_ports(pvn_id, ports)
 
         app_threads = []
         for i, app in enumerate(pvn_json["apps"]):
-            app_threads.append(spawn(_create_container, ports[i][0], app, client_ip))
+            app_threads.append(spawn(_create_container, ports[i]["id"], app, client_ip))
         app_ids = [thread.wait() for thread in app_threads]
         model.set_apps(pvn_id, app_ids)
 
@@ -303,7 +307,7 @@ def _start_pvn(client_ip, ethertype, pvn_id, pvn_json):
                 steerings.append(_prepare_steering(origin, client_ip, ethertype, ports, edge))
 
         for port in ports:
-            steerings.append({"src_neutron_port": port[0]})
+            steerings.append({"src_neutron_port": port["id"]})
 
         steering_ids = _create_steerings(steerings)
         model.set_steerings(pvn_id, steering_ids)

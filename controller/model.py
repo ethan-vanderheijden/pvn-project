@@ -69,8 +69,8 @@ def create_pvn(client_ip, ethertype):
     return new_id
 
 
-def set_ports(pvn_id, port_ids):
-    PVN_DB[pvn_id]["ports"] = deepcopy(port_ids)
+def set_ports(pvn_id, port_data):
+    PVN_DB[pvn_id]["ports"] = deepcopy(port_data)
     if PVN_DB[pvn_id]["status"] != Status.INIT_PORTS:
         raise PVNInvalidState()
     PVN_DB[pvn_id]["status"] = Status.INIT_APPS
