@@ -1,44 +1,39 @@
+use crate::{client::Client, utils};
+
 use async_trait::async_trait;
 use http::{HeaderValue, Method, Request, Response, header::CACHE_CONTROL, request};
-use http_body_util::BodyExt;
 use http_cache::{
     CacheManager, CacheMode, CacheOptions, HttpCache, HttpCacheOptions, HttpResponse, Middleware,
 };
-use http_cache_semantics::CachePolicy;
+use http_cache_semantics::{CachePolicy, RequestLike};
 use hudsucker::{HttpContext, HttpHandler, RequestOrResponse};
-use hyper_util::client::legacy::{Client, connect::Connect};
-use std::{collections::HashMap, mem, time::SystemTime};
+use std::{sync::Arc, time::SystemTime};
 use tracing::{error, info};
 use url::Url;
 
 type CacheResult<T> = http_cache::Result<T>;
 
-struct PullThroughRequest<C> {
+/// Middleware that performs requests with the provided client.
+struct UpstreamRequest<C> {
     req: Request<hudsucker::Body>,
     parts: request::Parts,
-    client: Client<C, hudsucker::Body>,
+    client: Arc<C>,
 }
 
-async fn clone_req(
-    req: Request<hudsucker::Body>,
-) -> (Request<hudsucker::Body>, Request<hudsucker::Body>) {
-    let (parts, body) = req.into_parts();
-
-    let parts1 = parts.clone();
-    let parts2 = parts.clone();
-
-    let body_collected = body.collect().await.unwrap().to_bytes();
-    let body1 = http_body_util::Full::new(body_collected.clone());
-    let body2 = http_body_util::Full::new(body_collected);
-
-    (
-        Request::from_parts(parts1, hudsucker::Body::from(body1)),
-        Request::from_parts(parts2, hudsucker::Body::from(body2)),
-    )
+impl<C> UpstreamRequest<C> {
+    /// Create a new `UpstreamRequest` perform the given request using `client`.
+    fn new(req: Request<hudsucker::Body>, client: Arc<C>) -> Self {
+        let (parts, body) = req.into_parts();
+        UpstreamRequest {
+            req: Request::from_parts(parts.clone(), body),
+            parts,
+            client,
+        }
+    }
 }
 
 #[async_trait]
-impl<C: Send + Sync + Clone + 'static + Connect> Middleware for &mut PullThroughRequest<C> {
+impl<C: Client> Middleware for &mut UpstreamRequest<C> {
     fn is_method_get_head(&self) -> bool {
         match self.req.method() {
             &Method::GET | &Method::HEAD => true,
@@ -92,48 +87,42 @@ impl<C: Send + Sync + Clone + 'static + Connect> Middleware for &mut PullThrough
     }
 
     async fn remote_fetch(&mut self) -> CacheResult<HttpResponse> {
-        let req = mem::replace(
-            &mut self.req,
-            Request::new(http_body_util::Empty::new().into()),
-        );
-        let (req1, req2) = clone_req(req).await;
-        self.req = req1;
-
-        info!("Remote fetch: {}", self.req.uri());
-        let (parts, body) = self.client.request(req2).await?.into_parts();
-        let mut headers = HashMap::new();
-        for (name, value) in &parts.headers {
-            let name = name.to_string();
-            let value = value.to_str().unwrap().to_owned();
-            headers.insert(name, value);
-        }
-        let status: u16 = parts.status.into();
-        let version = http_cache::HttpVersion::try_from(parts.version)?;
-        Ok(HttpResponse {
-            body: body.collect().await?.to_bytes().into(),
-            headers,
-            status,
-            url: Url::parse(&self.req.uri().to_string())?,
-            version,
-        })
+        info!("Upstream request: {}", self.req.uri());
+        let url = Url::parse(&self.req.uri().to_string())?;
+        Ok(self.client.get(&url, self.req.headers()).await?)
     }
 }
 
-impl<C> PullThroughRequest<C> {
+impl<C> UpstreamRequest<C> {
+    /// Convert the `UpstreamRequest` back into the original request.
+    /// Useful if you want to fall back to performing the upstream
+    /// request via another method.
     fn recover_request(self) -> Request<hudsucker::Body> {
         let (parts, body) = self.req.into_parts();
         Request::from_parts(parts, hudsucker::Body::from(body))
     }
 }
 
-#[derive(Clone)]
-pub struct HttpChildCache<T: CacheManager + Clone, C> {
+/// HTTP proxy implementation that caches resources according to HTTP standards.
+pub struct HttpChildCache<T: CacheManager, C> {
     cache: HttpCache<T>,
-    client: Client<C, hudsucker::Body>,
+    client: Arc<C>,
 }
 
-impl<T: CacheManager + Clone, C> HttpChildCache<T, C> {
-    pub fn new(cache_manager: T, client: Client<C, hudsucker::Body>) -> HttpChildCache<T, C> {
+impl<T: CacheManager + Clone, C> Clone for HttpChildCache<T, C> {
+    fn clone(&self) -> Self {
+        // Cloning is trivial but derive macro gets confused
+        // since type C isn't cloneable
+        HttpChildCache {
+            cache: self.cache.clone(),
+            client: Arc::clone(&self.client),
+        }
+    }
+}
+
+impl<T: CacheManager, C: Client> HttpChildCache<T, C> {
+    /// Create a new HTTP caching proxy that uses `client` to perform all GET requests.
+    pub fn new(cache_manager: T, client: Arc<C>) -> HttpChildCache<T, C> {
         let cache_opts = CacheOptions {
             shared: false,
             ..CacheOptions::default()
@@ -144,6 +133,9 @@ impl<T: CacheManager + Clone, C> HttpChildCache<T, C> {
                 manager: cache_manager,
                 options: HttpCacheOptions {
                     cache_options: Some(cache_opts),
+                    cache_key: Some(Arc::new(|parts| {
+                        utils::create_cache_key(parts.method(), &parts.uri())
+                    })),
                     ..HttpCacheOptions::default()
                 },
             },
@@ -152,28 +144,22 @@ impl<T: CacheManager + Clone, C> HttpChildCache<T, C> {
     }
 }
 
-impl<T: CacheManager + Clone, C: Send + Sync + Clone + 'static + Connect> HttpHandler
-    for HttpChildCache<T, C>
-{
+impl<T: CacheManager + Clone, C: Client + 'static> HttpHandler for HttpChildCache<T, C> {
     async fn handle_request(
         &mut self,
         _ctx: &HttpContext,
         req: Request<hudsucker::Body>,
     ) -> RequestOrResponse {
         // processed requests overshadows Hudsucker's built-in functionality
-        // only trap necessary requests
+        // only trap GET requests
         if req.method() != Method::GET {
             return RequestOrResponse::Request(req);
         }
 
-        let (parts, body) = req.into_parts();
-        let parts_2 = parts.clone();
-        let mut middleware = PullThroughRequest {
-            req: Request::from_parts(parts, body),
-            parts: parts_2,
-            client: self.client.clone(),
-        };
+        let mut middleware = UpstreamRequest::new(req, self.client.clone());
 
+        // if encountering an error, return the request to Hudsucker
+        // which will execute them directly and bypass the upstream cache
         match self.cache.run(&mut middleware).await {
             Ok(response) => match response.parts() {
                 Ok(parts) => {

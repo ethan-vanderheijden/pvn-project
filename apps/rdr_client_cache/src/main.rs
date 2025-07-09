@@ -1,4 +1,8 @@
 mod cache;
+mod client;
+mod utils;
+
+use crate::{cache::HttpChildCache, client::PullThroughClient};
 
 use anyhow::Result;
 use clap::Parser;
@@ -9,27 +13,29 @@ use hudsucker::{
     rcgen::{CertificateParams, KeyPair},
     rustls::crypto::aws_lc_rs,
 };
-use hyper_rustls::HttpsConnector;
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-    rt::TokioExecutor,
-};
 use std::net::ToSocketAddrs;
 use tokio::fs;
 use tracing::{Level, error};
 
-use crate::cache::HttpChildCache;
-
 #[derive(Parser, Debug)]
 struct Args {
-    #[clap(help = "Path to the PEM-encoded private key file")]
+    #[clap(help = "Path to the Root CA's PEM-encoded private key file")]
     key: String,
-    #[clap(help = "Path to the DER-encoded CA certificate file")]
+    #[clap(help = "Path to the Root CA's DER-encoded certificate file")]
     der_cert: String,
-    #[clap(help = "Path to cache file")]
-    cache: String,
+    #[clap(help = "Path to persistent cache directory")]
+    cache_file: String,
+    #[clap(help = "Address of the parent RDR cache")]
+    upstream_cache_address: String,
+    #[clap(long, default_value = "4000", help = "Port to run the RDR client cache on")]
+    port: u16,
 }
 
+/// The RDR client cache uses Hudsucker act as a man-in-the-middle HTTP proxy and http-cache
+/// to behave like a standards-compliant HTTP proxy that caches appropriate GET requests.
+/// It performs all non-GET requests by directly contacting the target server, but GET requests
+/// are forwarded to the RDR parent cache, if reachable. The parent cache can push additional
+/// resources to the client beyond the forwarded GET requests.
 #[tokio::main]
 async fn main() -> Result<()> {
     let subscriber = tracing_subscriber::fmt()
@@ -47,23 +53,24 @@ async fn main() -> Result<()> {
         .self_signed(&key)
         .expect("Failed to sign CA certificate");
 
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .build();
-    let client: Client<HttpsConnector<HttpConnector>, hudsucker::Body> =
-        Client::builder(TokioExecutor::new())
-            .http1_title_case_headers(true)
-            .http1_preserve_header_case(true)
-            .build(https_connector);
-
-    let cacache = CACacheManager::new(args.cache.into(), true);
+    let parent_addr = args
+        .upstream_cache_address
+        .to_socket_addrs()
+        .expect("Failed to parse upstream cache address")
+        .next()
+        .expect("Could not resolve upstream cache adress");
+    let cacache = CACacheManager::new(args.cache_file.into(), false);
+    let client = PullThroughClient::new(parent_addr, cacache.clone()).await;
     let child_cache = HttpChildCache::new(cacache, client);
 
     let proxy = Proxy::builder()
-        .with_addr("127.0.0.1:4000".to_socket_addrs().unwrap().next().unwrap())
+        .with_addr(
+            format!("127.0.0.1:{}", args.port)
+                .to_socket_addrs()
+                .unwrap()
+                .next()
+                .unwrap(),
+        )
         .with_ca(RcgenAuthority::new(
             key,
             cert,
