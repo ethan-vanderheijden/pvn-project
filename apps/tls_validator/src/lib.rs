@@ -2,15 +2,10 @@ mod protocol;
 mod tcp_buffer;
 
 use anyhow::Result;
-use colored::Colorize;
 use core::panic;
-use pnet::{
-    packet::{
-        Packet,
-        ip::IpNextHeaderProtocols,
-        tcp::{MutableTcpPacket, TcpFlags, TcpPacket},
-    },
-    util,
+use pnet::packet::{
+    Packet,
+    tcp::{MutableTcpPacket, TcpFlags, TcpPacket},
 };
 use rustls::{
     ProtocolVersion, RootCertStore,
@@ -35,6 +30,9 @@ use tracing::{debug, info, warn};
 // use the maximum possible window with the TCP window scale extension
 const TCP_MAX_WINDOW: u32 = (2 ^ 16 - 1) * 2 ^ 14;
 
+/// Validation result of the TLS middlebox. Cleared means the packet
+/// should be forwarded as is. Invalid means the provided RST packets should
+/// be sent in both directions.
 #[derive(Debug)]
 pub enum TlsvResult<'a> {
     Cleared,
@@ -44,6 +42,7 @@ pub enum TlsvResult<'a> {
     },
 }
 
+/// 5-tuple TCP Flow identifier.
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct TcpFlow {
     pub source_ip: IpAddr,
@@ -53,6 +52,7 @@ pub struct TcpFlow {
 }
 
 impl TcpFlow {
+    /// Reverse the flow by swapping source and destination IP/port.
     pub fn reverse(self) -> TcpFlow {
         TcpFlow {
             source_ip: self.dest_ip,
@@ -84,6 +84,9 @@ struct FlowState {
     status: Status,
 }
 
+/// State machine implementation that processes the TCP packet sent from the end user and
+/// transitions to the next state. Returns true if the packet is valid (i.e. flow is
+/// cleared, not a TLS flow, or the certs are valid) and false if RST packets should be generated.
 fn process_outgoing_tcp(packet: &TcpPacket, state: &mut FlowState, dest_ip: IpAddr) -> bool {
     debug!("Flow status: {:?}", state.status);
 
@@ -152,6 +155,7 @@ fn process_outgoing_tcp(packet: &TcpPacket, state: &mut FlowState, dest_ip: IpAd
     return !matches!(state.status, Status::Bad);
 }
 
+/// Similar to `process_outgoing_tcp`, but processes TCP packets destined for the end user.
 fn process_incoming_tcp(packet: &TcpPacket, state: &mut FlowState) -> bool {
     debug!("Flow status: {:?}", state.status);
 
@@ -240,6 +244,8 @@ fn process_incoming_tcp(packet: &TcpPacket, state: &mut FlowState) -> bool {
     return !matches!(state.status, Status::Bad);
 }
 
+/// TLS Validator middlebox that processes bi-directional TCP packets
+/// and validates TLS certificates.
 pub struct TlsvMiddlebox {
     flows: HashMap<TcpFlow, FlowState>,
 }
@@ -251,20 +257,15 @@ impl TlsvMiddlebox {
         }
     }
 
+    /// Extracts and refreshes the flow state from the dictionary of tracked flows.
+    /// It will initialize a new flow if it doesn't exist yet. It updates the `last_seen`
+    /// timestamp and the largest seen sequence number from the client/server.
     fn update_flow_state(
         &mut self,
         packet: &TcpPacket,
         flow: TcpFlow,
         is_outgoing: bool,
     ) -> Result<&mut FlowState, ()> {
-        if is_outgoing {
-            let fmt = format!("{:?}", flow).bright_blue();
-            debug!("Outgoing: seqno={}, {}", packet.get_sequence(), fmt);
-        } else {
-            let fmt = format!("{:?}", flow).bright_red();
-            debug!("Incoming: seqno={}, {}", packet.get_sequence(), fmt);
-        }
-
         let timestamp = Instant::now();
         let state;
         if packet.get_flags() & TcpFlags::SYN != 0 {
@@ -321,6 +322,8 @@ impl TlsvMiddlebox {
         Ok(state)
     }
 
+    /// Helper function to process the TCP packet and construct the RST packets
+    /// if necessary.
     fn validate_flow(
         &mut self,
         packet: &TcpPacket,
@@ -347,52 +350,8 @@ impl TlsvMiddlebox {
 
                 let mut return_packet = protocol::generate_return_rst(packet, rst_seqno);
 
-                let (src, dest) = if is_outgoing {
-                    (src_ip, dest_ip)
-                } else {
-                    (dest_ip, src_ip)
-                };
-                match (src, dest) {
-                    (IpAddr::V4(src), IpAddr::V4(dest)) => {
-                        packet_rst.set_checksum(util::ipv4_checksum(
-                            packet_rst.packet(),
-                            8,
-                            &[],
-                            &src,
-                            &dest,
-                            IpNextHeaderProtocols::Tcp,
-                        ));
-                        return_packet.set_checksum(util::ipv4_checksum(
-                            return_packet.packet(),
-                            8,
-                            &[],
-                            &dest,
-                            &src,
-                            IpNextHeaderProtocols::Tcp,
-                        ));
-                    }
-                    (IpAddr::V6(src), IpAddr::V6(dest)) => {
-                        packet_rst.set_checksum(util::ipv6_checksum(
-                            packet_rst.packet(),
-                            8,
-                            &[],
-                            &src,
-                            &dest,
-                            IpNextHeaderProtocols::Tcp,
-                        ));
-                        return_packet.set_checksum(util::ipv6_checksum(
-                            return_packet.packet(),
-                            8,
-                            &[],
-                            &dest,
-                            &src,
-                            IpNextHeaderProtocols::Tcp,
-                        ));
-                    },
-                    _ => {
-                        panic!("Both IPs in flow should be of the same type");
-                    }
-                }
+                protocol::set_tcp_checksum(&mut packet_rst, src_ip, dest_ip);
+                protocol::set_tcp_checksum(&mut return_packet, src_ip, dest_ip);
 
                 return TlsvResult::Invalid {
                     forward_packet: packet_rst.consume_to_immutable(),
@@ -405,6 +364,7 @@ impl TlsvMiddlebox {
         TlsvResult::Cleared
     }
 
+    /// Call this function with each TCP packet sent by the end user.
     pub fn process_outgoing(
         &mut self,
         tcp_packet: &TcpPacket,
@@ -413,6 +373,7 @@ impl TlsvMiddlebox {
         self.validate_flow(tcp_packet, flow, true)
     }
 
+    /// Call this function with each TCP packet going to the end user.
     pub fn process_incoming(
         &mut self,
         tcp_packet: &TcpPacket,
