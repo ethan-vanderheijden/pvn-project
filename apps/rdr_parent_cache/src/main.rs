@@ -1,4 +1,5 @@
 mod server;
+mod resolver;
 
 use anyhow::Result;
 use clap::Parser;
