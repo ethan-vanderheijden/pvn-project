@@ -16,7 +16,7 @@ use flate2::{Compression, write::GzEncoder};
 use futures::StreamExt;
 use http::{
     HeaderMap, HeaderName,
-    header::{ACCEPT_LANGUAGE, CONTENT_ENCODING, COOKIE, USER_AGENT},
+    header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONTENT_ENCODING, COOKIE, USER_AGENT},
 };
 use rdr_common::WireProtocol;
 use std::{io::Write, sync::Arc, time::Duration};
@@ -29,15 +29,16 @@ use tracing::{error, info, warn};
 const PAGE_SETTLE_TIME: u32 = 10;
 
 /// Extracts the request and response from the provided network event. The network event
-/// must be in the response stage (i.e. `response_status_code` is set). The response body
-/// is re-compressed with gzip (since it is automatically uncompressed by Chrome).
+/// must be in the response stage (i.e. `response_status_code` is set). `use_gzip` says
+/// whether to re-compress the response body with gzip (since Chrome auto-decompresses it).
 async fn extract_resource(
     page: Arc<Page>,
     event: Arc<EventRequestPaused>,
+    use_gzip: bool,
 ) -> Result<rdr_common::Response> {
     let status = event.response_status_code.unwrap();
     let converted_request: rdr_common::Request = event.request.clone().try_into()?;
-    let response_body = if status < 300 && status > 399 {
+    let mut response_body = if status < 300 && status > 399 {
         // GetResponseBody doesn't work for redirected requests
         Vec::new()
     } else {
@@ -49,9 +50,12 @@ async fn extract_resource(
             response.result.body.into_bytes()
         }
     };
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&response_body)?;
-    let response_body = encoder.finish()?;
+
+    if use_gzip {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&response_body)?;
+        response_body = encoder.finish()?;
+    }
 
     let mut headers = HeaderMap::new();
     // unfortunately, the response body given by Chrome is already uncompressed
@@ -108,20 +112,29 @@ async fn sniff_resources(
                     warn!("Failed to abort request: {error}");
                 }
             } else if event.response_status_code.is_some() {
-                match extract_resource(page.clone(), event.clone()).await {
-                    Ok(mut resource) => {
-                        let mut writable = writable_stream.lock().await;
-                        match resource.serialize_to(&mut *writable).await {
-                            Ok(_) => {
-                                info!("Pushed resource for '{}'", resource.url);
-                            }
-                            Err(error) => {
-                                warn!("Failed to write resource: {error}");
+                if let Ok(request_headers) =
+                    rdr_common::headers_from_json(event.request.headers.inner())
+                {
+                    let mut use_gzip = false;
+                    if let Some(encoding) = request_headers.get(ACCEPT_ENCODING) {
+                        use_gzip = encoding.to_str().unwrap().contains("gzip");
+                    }
+
+                    match extract_resource(page.clone(), event.clone(), use_gzip).await {
+                        Ok(mut resource) => {
+                            let mut writable = writable_stream.lock().await;
+                            match resource.serialize_to(&mut *writable).await {
+                                Ok(_) => {
+                                    info!("Pushed resource for '{}'", resource.url);
+                                }
+                                Err(error) => {
+                                    warn!("Failed to write resource: {error}");
+                                }
                             }
                         }
-                    }
-                    Err(error) => {
-                        warn!("Failed to extract resource from response: {error}");
+                        Err(error) => {
+                            warn!("Failed to extract resource from response: {error}");
+                        }
                     }
                 }
             }

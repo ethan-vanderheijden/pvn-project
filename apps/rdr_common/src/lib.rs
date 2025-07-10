@@ -1,3 +1,5 @@
+pub mod event_hub;
+
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use bincode::{
@@ -52,7 +54,7 @@ where
 }
 
 /// Helper function to convert JSON object to HTTP headers.
-fn headers_from_json(json: &serde_json::Value) -> Result<HeaderMap> {
+pub fn headers_from_json(json: &serde_json::Value) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     match json {
         serde_json::Value::Object(map) => {

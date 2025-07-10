@@ -5,20 +5,19 @@ use async_trait::async_trait;
 use http::HeaderMap;
 use http_cache::CacheManager;
 use http_cache_semantics::CachePolicy;
-use rdr_common::WireProtocol;
-use std::{clone::Clone, collections::HashMap, fmt, net::SocketAddr, sync::Arc, time::Duration};
+use rdr_common::{WireProtocol, event_hub::EventHub};
+use std::{clone::Clone, fmt, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{
-        Mutex, MutexGuard,
-        broadcast::{self, Sender},
-    },
+    sync::Mutex,
 };
 use tracing::{info, warn};
 use url::Url;
+
+const UPSTREAM_TIMEOUT: u32 = 5;
 
 /// Trait representing a client that can perform HTTP GET requests.
 #[async_trait]
@@ -54,7 +53,7 @@ impl std::error::Error for PullThroughError {}
 /// and silently adds them to the local cache.
 pub struct PullThroughClient<C: CacheManager> {
     conn: Mutex<Option<OwnedWriteHalf>>,
-    pending_requests: Mutex<HashMap<Url, Sender<rdr_common::Response>>>,
+    pending_requests: Mutex<EventHub<Url, rdr_common::Response>>,
     cache: C,
 }
 
@@ -113,14 +112,13 @@ async fn read_loop<C: CacheManager>(parent_addr: SocketAddr, client: Arc<PullThr
         if let Some(reader) = &mut read_half {
             match rdr_common::Response::extract_from(reader).await {
                 Ok(response) => {
+                    // if the notification goes through, we don't need to add response to cache
+                    // since http-cache will do this automatically
                     let mut pending_requests = client.pending_requests.lock().await;
-                    if let Some(tx) = pending_requests.remove(&response.original_request.url) {
-                        info!("Expected response for {}", response.original_request.url);
-                        // note: might throw error if all receivers have timed out (but this is fine)
-                        let _ = tx.send(response);
-                        // don't need to add response to cache since http-cache will
-                        // do this automatically
-                    } else {
+                    if let Err(response) =
+                        pending_requests.notify(&response.original_request.url.clone(), response)
+                    {
+                        drop(pending_requests);
                         // extra resource pushed by parent cache, must add to cache manually
                         info!(
                             "Extra resource pushed by parent cache: {}",
@@ -160,7 +158,9 @@ impl<C: CacheManager> PullThroughClient<C> {
     pub async fn new(parent_addr: SocketAddr, cache: C) -> Arc<Self> {
         let client = PullThroughClient {
             conn: Mutex::new(None),
-            pending_requests: Mutex::new(HashMap::new()),
+            pending_requests: Mutex::new(EventHub::new(Duration::from_secs(
+                UPSTREAM_TIMEOUT as u64,
+            ))),
             cache,
         };
         let client = Arc::new(client);
@@ -172,39 +172,6 @@ impl<C: CacheManager> PullThroughClient<C> {
 
         client
     }
-
-    /// Wait for read_loop to notify us that the request has been fulfilled.
-    /// Atomically waits for notification and drops the lock on `pending_requests`.
-    async fn wait_for_request(
-        &self,
-        url: &Url,
-        pending_requests: MutexGuard<'_, HashMap<Url, Sender<rdr_common::Response>>>,
-    ) -> Result<rdr_common::Response> {
-        let mut rx = pending_requests.get(url).unwrap().subscribe();
-        // subscribe to channel before dropping guard to avoid race condition
-        // where request finishes before we listen for it
-        // must drop pending_requests since read_loop takes out lock before sending data
-        drop(pending_requests);
-        let Ok(result) = tokio::time::timeout(Duration::from_secs(5), async {
-            match rx.recv().await {
-                Ok(finished_response) => {
-                    info!("Request for {} completed", url);
-                    return Ok(finished_response);
-                }
-                Err(e) => {
-                    // Note: we should never get a lagged error since
-                    // only one response can be written
-                    warn!("Error receiving finished request: {e}");
-                    return Err(e);
-                }
-            }
-        })
-        .await
-        else {
-            bail!(PullThroughError::UpstreamTimedOut);
-        };
-        result.map_err(|e| e.into())
-    }
 }
 
 #[async_trait]
@@ -214,22 +181,28 @@ impl<C: CacheManager> Client for PullThroughClient<C> {
     /// is unreachable or times out.
     async fn get(&self, url: &Url, headers: &http::HeaderMap) -> Result<http_cache::HttpResponse> {
         let mut pending_requests = self.pending_requests.lock().await;
-        if !pending_requests.contains_key(url) {
+        if !pending_requests.has_event(url) {
             let mut conn = self.conn.lock().await;
             if let Some(writable) = conn.as_mut() {
-                let (tx, _) = broadcast::channel(1);
-                pending_requests.insert(url.clone(), tx);
-
                 let mut req = rdr_common::Request {
                     url: url.clone(),
                     headers: headers.clone(),
                 };
+                info!("Forwarding request to upstream cache: {}", url);
                 req.serialize_to(writable).await?;
             } else {
                 bail!(PullThroughError::NoUpstreamConnection);
             }
         }
-        let response = self.wait_for_request(url, pending_requests).await?;
-        Ok(response.convert().1)
+
+        let response = pending_requests.get_or_create_event(url.clone());
+        drop(pending_requests);
+        let response = response.listen().await;
+
+        if let Some(response) = response {
+            Ok(response.convert().1)
+        } else {
+            bail!(PullThroughError::UpstreamTimedOut);
+        }
     }
 }
