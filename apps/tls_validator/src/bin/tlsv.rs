@@ -14,7 +14,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 use tls_validator::{TcpFlow, TlsvMiddlebox, TlsvResult};
-use tracing::Level;
+use tracing::{error, Level};
 
 const BUFFER_SIZE: usize = 16384;
 const NEW_PACKET_TTL: u8 = 64;
@@ -59,7 +59,7 @@ fn process_ipv4(interface: &NetworkInterface, client_ip: Ipv4Addr) {
     };
 
     let Ok(Ethernet(mut tx, mut rx)) = datalink::channel(&interface, config) else {
-        eprintln!("Couldn't find Ethernet channel.");
+        error!("Couldn't find Ethernet channel.");
         return;
     };
     let mut middlebox = TlsvMiddlebox::new();
@@ -126,7 +126,7 @@ fn process_ipv4(interface: &NetworkInterface, client_ip: Ipv4Addr) {
                 tx.send_to(packet, None);
             }
             Err(e) => {
-                eprintln!("Error occured while reading packet: {}", e);
+                error!("Error occured while reading packet: {}", e);
             }
         }
     }
@@ -142,7 +142,7 @@ fn process_ipv6(interface: &NetworkInterface, client_ip: Ipv6Addr) {
     };
 
     let Ok(Ethernet(mut tx, mut rx)) = datalink::channel(&interface, config) else {
-        eprintln!("Couldn't find Ethernet channel.");
+        error!("Couldn't find Ethernet channel.");
         return;
     };
     let mut middlebox = TlsvMiddlebox::new();
@@ -206,7 +206,7 @@ fn process_ipv6(interface: &NetworkInterface, client_ip: Ipv6Addr) {
                 tx.send_to(packet, None);
             }
             Err(e) => {
-                eprintln!("Error occured while reading packet: {}", e);
+                error!("Error occured while reading packet: {}", e);
             }
         }
     }

@@ -1,16 +1,13 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use async_trait::async_trait;
 use bincode::{
     config::{self, Configuration, Limit, LittleEndian, Varint},
     serde::{decode_from_slice, encode_to_vec},
 };
-use http::{HeaderMap, StatusCode};
+use chromiumoxide_cdp::cdp;
+use http::{HeaderMap, HeaderName, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    io::{Read, Write},
-};
+use std::{collections::HashMap, fmt::Debug};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use url::Url;
 
@@ -22,18 +19,11 @@ const CONFIG: Configuration<LittleEndian, Varint, Limit<4294967295>> =
 pub trait WireProtocol: Sized {
     /// Serialize the data and stuff it into the writable stream. Uses frame length
     /// prefixes to delimit the data.
-    fn serialize_to(&self, writer: &mut impl Write) -> Result<()>;
-    /// Identical to `serialize_to`, but for asynchronous writes.
-    async fn serialize_to_async<W: AsyncWrite + Unpin + Send>(
-        &mut self,
-        writer: &mut W,
-    ) -> Result<()>;
+    async fn serialize_to<W: AsyncWrite + Unpin + Send>(&mut self, writer: &mut W) -> Result<()>;
     /// Extract the data from the readable stream. Assumes the stream is positioned at
     /// the start of a new data object. Returns error if I/O error occurs or data couldn't
     /// be deserialized. In either case, the data stream is likely unrecoverable.
-    fn extract_from(reader: &mut impl Read) -> Result<Self>;
-    /// Identical to `extract_from`, but for asynchronous reads.
-    async fn extract_from_async<R: AsyncRead + Unpin + Send>(reader: &mut R) -> Result<Self>;
+    async fn extract_from<R: AsyncRead + Unpin + Send>(reader: &mut R) -> Result<Self>;
 }
 
 #[async_trait]
@@ -41,19 +31,7 @@ impl<T> WireProtocol for T
 where
     T: Serialize + DeserializeOwned + Send,
 {
-    fn serialize_to(&self, writer: &mut impl Write) -> Result<()> {
-        let data = encode_to_vec(self, CONFIG)?;
-        let size = data.len() as u32;
-        let size_bytes = size.to_le_bytes();
-        writer.write_all(&size_bytes)?;
-        writer.write_all(&data)?;
-        Ok(())
-    }
-
-    async fn serialize_to_async<W: AsyncWrite + Unpin + Send>(
-        &mut self,
-        writer: &mut W,
-    ) -> Result<()> {
+    async fn serialize_to<W: AsyncWrite + Unpin + Send>(&mut self, writer: &mut W) -> Result<()> {
         let data = encode_to_vec(self, CONFIG)?;
         let size = data.len() as u32;
         let size_bytes = size.to_le_bytes();
@@ -62,17 +40,7 @@ where
         Ok(())
     }
 
-    fn extract_from(reader: &mut impl Read) -> Result<Self> {
-        let mut length_bytes = [0u8; 4];
-        reader.read_exact(&mut length_bytes)?;
-        let length = u32::from_le_bytes(length_bytes);
-        let mut data = vec![0u8; length as usize];
-        reader.read_exact(&mut data)?;
-        let (item, _) = decode_from_slice(&data, CONFIG)?;
-        Ok(item)
-    }
-
-    async fn extract_from_async<R: AsyncRead + Unpin + Send>(reader: &mut R) -> Result<Self> {
+    async fn extract_from<R: AsyncRead + Unpin + Send>(reader: &mut R) -> Result<Self> {
         let mut length_bytes = [0u8; 4];
         reader.read_exact(&mut length_bytes).await?;
         let length = u32::from_le_bytes(length_bytes);
@@ -83,12 +51,39 @@ where
     }
 }
 
+/// Helper function to convert JSON object to HTTP headers.
+fn headers_from_json(json: &serde_json::Value) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    match json {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                headers.insert(k.parse::<HeaderName>()?, v.to_string().parse()?);
+            }
+        }
+        _ => {
+            bail!("Expected headers to be a JSON object");
+        }
+    }
+    Ok(headers)
+}
+
 /// Information about an HTTP request transfered from client to parent cache.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Request {
     pub url: Url,
     #[serde(with = "http_serde::header_map")]
     pub headers: HeaderMap,
+}
+
+impl TryFrom<cdp::browser_protocol::network::Request> for Request {
+    type Error = anyhow::Error;
+
+    fn try_from(value: cdp::browser_protocol::network::Request) -> Result<Self> {
+        Ok(Self {
+            url: Url::parse(&value.url)?,
+            headers: headers_from_json(value.headers.inner())?,
+        })
+    }
 }
 
 impl Into<http::Request<()>> for Request {
@@ -113,17 +108,9 @@ pub struct Response {
     pub data: Vec<u8>,
 }
 
-impl Into<http::Response<Vec<u8>>> for Response {
-    fn into(self) -> http::Response<Vec<u8>> {
-        let mut converted = http::Response::new(self.data);
-        *converted.status_mut() = self.status;
-        *converted.headers_mut() = self.headers;
-        converted
-    }
-}
-
-impl Into<http_cache::HttpResponse> for Response {
-    fn into(self) -> http_cache::HttpResponse {
+impl Response {
+    /// Helper function to split Response object into its HTTP request and response parts.
+    pub fn convert(self) -> (http::Request<()>, http_cache::HttpResponse) {
         let mut headers = HashMap::new();
         let mut header_name = None;
         for (key, value) in self.headers.into_iter() {
@@ -135,13 +122,16 @@ impl Into<http_cache::HttpResponse> for Response {
                 value.to_str().unwrap().to_owned(),
             );
         }
-        http_cache::HttpResponse {
-            body: self.data,
-            headers,
-            status: self.status.into(),
-            url: self.url,
-            version: http_cache::HttpVersion::Http11,
-        }
+        (
+            self.original_request.into(),
+            http_cache::HttpResponse {
+                body: self.data,
+                headers,
+                status: self.status.into(),
+                url: self.url,
+                version: http_cache::HttpVersion::Http11,
+            },
+        )
     }
 }
 

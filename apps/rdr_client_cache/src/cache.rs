@@ -8,7 +8,7 @@ use http_cache::{
 use http_cache_semantics::{CachePolicy, RequestLike};
 use hudsucker::{HttpContext, HttpHandler, RequestOrResponse};
 use std::{sync::Arc, time::SystemTime};
-use tracing::{error, info};
+use tracing::error;
 use url::Url;
 
 type CacheResult<T> = http_cache::Result<T>;
@@ -87,7 +87,6 @@ impl<C: Client> Middleware for &mut UpstreamRequest<C> {
     }
 
     async fn remote_fetch(&mut self) -> CacheResult<HttpResponse> {
-        info!("Upstream request: {}", self.req.uri());
         let url = Url::parse(&self.req.uri().to_string())?;
         Ok(self.client.get(&url, self.req.headers()).await?)
     }

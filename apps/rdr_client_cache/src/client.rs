@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use http::HeaderMap;
 use http_cache::CacheManager;
+use http_cache_semantics::CachePolicy;
 use rdr_common::WireProtocol;
 use std::{clone::Clone, collections::HashMap, fmt, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
@@ -51,7 +52,7 @@ impl std::error::Error for PullThroughError {}
 /// Client implementation that connects to an upstream cache and forwards
 /// requests to it. Also listens for resources pushed by the upstream cache
 /// and silently adds them to the local cache.
-pub struct PullThroughClient<C> {
+pub struct PullThroughClient<C: CacheManager> {
     conn: Mutex<Option<OwnedWriteHalf>>,
     pending_requests: Mutex<HashMap<Url, Sender<rdr_common::Response>>>,
     cache: C,
@@ -68,6 +69,26 @@ async fn reconnect(addr: SocketAddr) -> Option<(OwnedReadHalf, OwnedWriteHalf)> 
     }
 }
 
+/// Inject the request/response pair into the HTTP cache if it is deemed cacheable.
+async fn inject_to_cache(resource: rdr_common::Response, cache: &impl CacheManager) -> Result<()> {
+    let (request, response) = resource.convert();
+    let policy = CachePolicy::new(
+        &request,
+        &response.parts().map_err(|e| anyhow::Error::from_boxed(e))?,
+    );
+    if policy.is_storable() {
+        cache
+            .put(
+                utils::create_cache_key(request.method(), request.uri()),
+                response,
+                policy,
+            )
+            .await
+            .map_err(|e| anyhow::Error::from_boxed(e))?;
+    }
+    Ok(())
+}
+
 /// This function has three responsibilities:
 /// 1. Continually reads from the TCP connection to the parent cache and
 ///    notifies waiting request tasks when their request has been fulfilled.
@@ -78,7 +99,7 @@ async fn reconnect(addr: SocketAddr) -> Option<(OwnedReadHalf, OwnedWriteHalf)> 
 ///
 /// This function indefinitely holds a reference to the client instance. We detect
 /// when all other references are gone and drop our reference too.
-async fn read_loop<C>(parent_addr: SocketAddr, client: Arc<PullThroughClient<C>>) {
+async fn read_loop<C: CacheManager>(parent_addr: SocketAddr, client: Arc<PullThroughClient<C>>) {
     // Invariant: if read_half is None, then client.conn should also be None.
     let mut read_half: Option<OwnedReadHalf> = None;
     loop {
@@ -90,17 +111,24 @@ async fn read_loop<C>(parent_addr: SocketAddr, client: Arc<PullThroughClient<C>>
         }
 
         if let Some(reader) = &mut read_half {
-            match rdr_common::Response::extract_from_async(reader).await {
+            match rdr_common::Response::extract_from(reader).await {
                 Ok(response) => {
-                    // eprintln!("Just read {} bytes from parent cache", n);
                     let mut pending_requests = client.pending_requests.lock().await;
                     if let Some(tx) = pending_requests.remove(&response.original_request.url) {
+                        info!("Expected response for {}", response.original_request.url);
                         // note: might throw error if all receivers have timed out (but this is fine)
                         let _ = tx.send(response);
                         // don't need to add response to cache since http-cache will
                         // do this automatically
                     } else {
                         // extra resource pushed by parent cache, must add to cache manually
+                        info!(
+                            "Extra resource pushed by parent cache: {}",
+                            response.original_request.url
+                        );
+                        if let Err(error) = inject_to_cache(response, &client.cache).await {
+                            warn!("Failed to inject pushed resource into cache: {error}");
+                        }
                     }
                     continue;
                 }
@@ -116,6 +144,7 @@ async fn read_loop<C>(parent_addr: SocketAddr, client: Arc<PullThroughClient<C>>
         } else {
             if let Some((read, write)) = reconnect(parent_addr).await {
                 read_half = Some(read);
+                client.pending_requests.lock().await.clear();
                 client.conn.lock().await.replace(write);
                 info!("Reconnected to parent cache at {}", parent_addr);
             } else {
@@ -195,12 +224,12 @@ impl<C: CacheManager> Client for PullThroughClient<C> {
                     url: url.clone(),
                     headers: headers.clone(),
                 };
-                req.serialize_to_async(writable).await?;
+                req.serialize_to(writable).await?;
             } else {
                 bail!(PullThroughError::NoUpstreamConnection);
             }
         }
         let response = self.wait_for_request(url, pending_requests).await?;
-        Ok(response.into())
+        Ok(response.convert().1)
     }
 }
