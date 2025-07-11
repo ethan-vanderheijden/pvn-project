@@ -16,10 +16,11 @@ use cookie::Cookie;
 use flate2::{Compression, write::GzEncoder};
 use futures::{Stream, StreamExt};
 use http::{
-    HeaderMap, HeaderName,
+    HeaderMap, HeaderName, HeaderValue, Method,
     header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONTENT_ENCODING, COOKIE, USER_AGENT},
 };
 use rdr_common::WireProtocol;
+use reqwest::Client;
 use std::{io::Write, pin::pin, sync::Arc, time::Duration};
 use tokio::{net::tcp::OwnedWriteHalf, sync::Mutex};
 use tracing::{info, warn};
@@ -32,10 +33,12 @@ const PAGE_SETTLE_TIME: u32 = 10;
 async fn extract_resource(
     page: Arc<Page>,
     event: Arc<EventRequestPaused>,
-    use_gzip: bool,
+    original_accept_encoding: Option<&HeaderValue>,
 ) -> Result<rdr_common::Response> {
     let status = event.response_status_code.unwrap();
-    let converted_request: rdr_common::Request = event.request.clone().try_into()?;
+    let mut converted_request: rdr_common::Request = event.request.clone().try_into()?;
+    converted_request.headers.remove(ACCEPT_ENCODING);
+
     let mut response_body = if status < 300 && status > 399 {
         // GetResponseBody doesn't work for redirected requests
         Vec::new()
@@ -49,16 +52,25 @@ async fn extract_resource(
         }
     };
 
-    if use_gzip {
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&response_body)?;
-        response_body = encoder.finish()?;
+    let mut headers = HeaderMap::new();
+
+    if let Some(encoding) = original_accept_encoding {
+        // accept-encoding of actual request is irrelevant since we decode and re-encode
+        // the data. Pretend that it was using the client's intended encoding.
+        converted_request
+            .headers
+            .insert(ACCEPT_ENCODING, encoding.clone());
+
+        // unfortunately, the response body given by Chrome is already uncompressed
+        // so we need to re-compress it with gzip
+        if encoding.to_str()?.contains("gzip") {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&response_body)?;
+            response_body = encoder.finish()?;
+            headers.insert(CONTENT_ENCODING, "gzip".parse()?);
+        }
     }
 
-    let mut headers = HeaderMap::new();
-    // unfortunately, the response body given by Chrome is already uncompressed
-    // so we need to re-compress it with gzip
-    headers.insert(CONTENT_ENCODING, "gzip".parse()?);
     for entry in event.response_headers.as_ref().unwrap() {
         if entry.name.to_lowercase() != "content-encoding" {
             headers.insert(entry.name.parse::<HeaderName>()?, entry.value.parse()?);
@@ -77,7 +89,10 @@ async fn extract_resource(
 /// Add network middleware to the page that intercepts all requests/responses and
 /// yields those resources. Non-GET requests are blocked since the
 /// simulated page load should be transparent.
-fn sniff_resources(page: Arc<Page>) -> impl Stream<Item = rdr_common::Response> {
+fn sniff_resources(
+    page: Arc<Page>,
+    original_accept_encoding: Option<HeaderValue>,
+) -> impl Stream<Item = rdr_common::Response> {
     stream! {
         let intercept_requests = RequestPattern::builder()
             .url_pattern("*")
@@ -116,21 +131,12 @@ fn sniff_resources(page: Arc<Page>) -> impl Stream<Item = rdr_common::Response> 
                     warn!("Failed to abort request: {error}");
                 }
             } else if event.response_status_code.is_some() {
-                if let Ok(request_headers) =
-                    rdr_common::headers_from_json(event.request.headers.inner())
-                {
-                    let mut use_gzip = false;
-                    if let Some(encoding) = request_headers.get(ACCEPT_ENCODING) {
-                        use_gzip = encoding.to_str().unwrap().contains("gzip");
+                match extract_resource(page.clone(), event.clone(), original_accept_encoding.as_ref()).await {
+                    Ok(resource) => {
+                        new_resource = Some(resource);
                     }
-
-                    match extract_resource(page.clone(), event.clone(), use_gzip).await {
-                        Ok(resource) => {
-                            new_resource = Some(resource);
-                        }
-                        Err(error) => {
-                            warn!("Failed to extract resource from response: {error}");
-                        }
+                    Err(error) => {
+                        warn!("Failed to extract resource from response: {error}");
                     }
                 }
             }
@@ -151,10 +157,11 @@ fn sniff_resources(page: Arc<Page>) -> impl Stream<Item = rdr_common::Response> 
 /// or making a single, direct request.
 pub struct Resolver {
     browser: Browser,
+    client: Client,
 }
 
 impl Resolver {
-    /// Starts a new headless Chrome instance for future recursive resolution.
+    /// Create a headless Chrome instance and HTTP client for future request resolution.
     pub async fn new() -> Result<Self> {
         let config = BrowserConfig::builder()
             .new_headless_mode()
@@ -169,13 +176,16 @@ impl Resolver {
             }
         });
 
-        Ok(Self { browser })
+        Ok(Self {
+            browser,
+            client: Client::new(),
+        })
     }
 
     /// Perform an HTTP GET request by simulating a full page load. Discovered resources are
     /// sent to the client immediately via the `writable_stream`. In the simulated page load,
-    /// the cookies and user agent will reflect the original request.
-    pub async fn recursive_resolve(
+    /// the cookies, user agent, and accepted language will reflect the original request.
+    pub async fn resolve_recursive(
         &self,
         writable_stream: Arc<Mutex<OwnedWriteHalf>>,
         req: rdr_common::Request,
@@ -220,9 +230,10 @@ impl Resolver {
         let page = Arc::new(page);
         let page_2 = page.clone();
         let writable_stream_2 = writable_stream.clone();
+        let original_accept_encoding = req.headers.get(ACCEPT_ENCODING).cloned();
         tokio::spawn(async move {
-            let mut stream = pin!(sniff_resources(page_2));
-            while let Some(mut resource) = stream.next().await {
+            let mut stream = pin!(sniff_resources(page_2, original_accept_encoding));
+            while let Some(resource) = stream.next().await {
                 let mut writable = writable_stream_2.lock().await;
                 match resource.serialize_to(&mut *writable).await {
                     Ok(_) => {
@@ -241,6 +252,30 @@ impl Resolver {
         // Give the page time to load and fetch new resources
         tokio::time::sleep(Duration::from_secs(PAGE_SETTLE_TIME as u64)).await;
 
+        Ok(())
+    }
+
+    pub async fn resolve_direct(
+        &self,
+        writable_stream: Arc<Mutex<OwnedWriteHalf>>,
+        req: rdr_common::Request,
+    ) -> Result<()> {
+        info!("Performing direct request to: {}", req.url);
+        let response = self
+            .client
+            .request(Method::GET, req.url.clone())
+            .headers(req.headers.clone())
+            .send()
+            .await?;
+        let resource = rdr_common::Response {
+            original_request: req,
+            url: response.url().to_owned(),
+            status: response.status(),
+            headers: response.headers().clone(),
+            data: response.bytes().await?.to_vec(),
+        };
+        let mut writerable_stream = writable_stream.lock().await;
+        resource.serialize_to(&mut *writerable_stream).await?;
         Ok(())
     }
 }

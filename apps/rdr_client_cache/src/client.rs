@@ -184,7 +184,7 @@ impl<C: CacheManager> Client for PullThroughClient<C> {
         if !pending_requests.has_event(url) {
             let mut conn = self.conn.lock().await;
             if let Some(writable) = conn.as_mut() {
-                let mut req = rdr_common::Request {
+                let req = rdr_common::Request {
                     url: url.clone(),
                     headers: headers.clone(),
                 };

@@ -21,7 +21,7 @@ const CONFIG: Configuration<LittleEndian, Varint, Limit<4294967295>> =
 pub trait WireProtocol: Sized {
     /// Serialize the data and stuff it into the writable stream. Uses frame length
     /// prefixes to delimit the data.
-    async fn serialize_to<W: AsyncWrite + Unpin + Send>(&mut self, writer: &mut W) -> Result<()>;
+    async fn serialize_to<W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> Result<()>;
     /// Extract the data from the readable stream. Assumes the stream is positioned at
     /// the start of a new data object. Returns error if I/O error occurs or data couldn't
     /// be deserialized. In either case, the data stream is likely unrecoverable.
@@ -31,9 +31,9 @@ pub trait WireProtocol: Sized {
 #[async_trait]
 impl<T> WireProtocol for T
 where
-    T: Serialize + DeserializeOwned + Send,
+    T: Serialize + DeserializeOwned + Send + Sync,
 {
-    async fn serialize_to<W: AsyncWrite + Unpin + Send>(&mut self, writer: &mut W) -> Result<()> {
+    async fn serialize_to<W: AsyncWrite + Unpin + Send>(&self, writer: &mut W) -> Result<()> {
         let data = encode_to_vec(self, CONFIG)?;
         let size = data.len() as u32;
         let size_bytes = size.to_le_bytes();
@@ -54,7 +54,7 @@ where
 }
 
 /// Helper function to convert JSON object to HTTP headers.
-pub fn headers_from_json(json: &serde_json::Value) -> Result<HeaderMap> {
+fn headers_from_json(json: &serde_json::Value) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     match json {
         serde_json::Value::Object(map) => {
