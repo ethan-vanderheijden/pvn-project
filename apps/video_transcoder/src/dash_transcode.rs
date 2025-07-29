@@ -6,6 +6,8 @@ use http::{
 };
 use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::body::Incoming;
+use regex::Regex;
+use tokio::sync::Mutex;
 use xmltree::{Element, XMLNode};
 
 use crate::full;
@@ -55,7 +57,7 @@ fn filter_children<'a>(ele: &'a mut Element, name: &str) -> impl Iterator<Item =
     })
 }
 
-fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) -> String {
+fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) -> Option<Regex> {
     // TODO: naive resolution doesn't support escaped characters (i.e. "$$")
     // or formatted width (i.e. "$...%[width]d$")
     let pattern = regex::escape(
@@ -63,10 +65,11 @@ fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) ->
             .replace("$RepresentationID$", representation_id)
             .replace("$Bandwidth$", bandwidth),
     );
-    pattern
+    let pattern = pattern
         .replace("\\$Number\\$", "\\d+")
         .replace("\\$Time\\$", "\\d+")
-        .replace("\\$SubNumber\\$", "\\d+")
+        .replace("\\$SubNumber\\$", "\\d+");
+    Regex::new(&format!(r"^{pattern}$")).ok()
 }
 
 fn prepare_dash_representations(
@@ -117,7 +120,13 @@ fn prepare_dash_representations(
                 let Some(init_template) = seg_template.attributes.get("initialization") else {
                     continue;
                 };
+                let Some(init_pattern) = resolve_template(&init_template, &id, &bandwidth) else {
+                    continue;
+                };
                 let Some(media_template) = seg_template.attributes.get("media") else {
+                    continue;
+                };
+                let Some(media_pattern) = resolve_template(&media_template, &id, &bandwidth) else {
                     continue;
                 };
 
@@ -127,8 +136,8 @@ fn prepare_dash_representations(
                 }
 
                 targets.push(TranscodeTarget {
-                    init_url: resolve_template(&init_template, &id, &bandwidth),
-                    media_pattern: resolve_template(&media_template, &id, &bandwidth),
+                    init_pattern,
+                    media_pattern,
                     codecs: codecs.clone(),
                     base_uri: representation_base,
                 });
@@ -141,20 +150,108 @@ fn prepare_dash_representations(
     targets
 }
 
+fn uri_prefixes(prefix: &Uri, test: &Uri) -> Option<String> {
+    let scheme_matches = test.scheme().is_none()
+        || prefix.scheme().is_none()
+        || test.scheme().unwrap() == prefix.scheme().unwrap();
+    let authority_matches = test.authority().is_none()
+        || prefix.authority().is_none()
+        || test.authority().unwrap() == prefix.authority().unwrap();
+    let path_prefixes = test.path().starts_with(prefix.path());
+    if scheme_matches && authority_matches && path_prefixes {
+        Some(test.path()[prefix.path().len()..].trim_matches('/').to_string())
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TranscodeTarget {
-    init_url: String,
-    media_pattern: String,
+    init_pattern: Regex,
+    media_pattern: Regex,
     codecs: String,
     base_uri: Uri,
 }
 
 pub struct Transcoder {
+    active_targets: Mutex<Vec<TranscodeTarget>>,
 }
 
 impl Transcoder {
     pub fn new() -> Self {
-        Transcoder {}
+        Transcoder {
+            active_targets: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn sniff_mpd(
+        &self,
+        request_uri: Uri,
+        response: Response<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        let (mut parts, body) = response.into_parts();
+        let body_collected = body.collect().await?;
+        let body_collected: Vec<u8> = body_collected.to_bytes().into_iter().collect();
+
+        let root_uri = request_uri.to_string();
+        let lash_slash = root_uri.rfind("/").unwrap_or(root_uri.len());
+        let root_uri = root_uri[..lash_slash].parse::<Uri>().unwrap();
+        let mut base_uri = root_uri.clone();
+
+        let mut mpd = None;
+        let Ok(mut nodes) = Element::parse_all(&body_collected[..]) else {
+            return Ok(Response::from_parts(parts, full(body_collected)));
+        };
+        for node in &mut nodes {
+            let XMLNode::Element(ele) = node else {
+                continue;
+            };
+            if ele.name == "MPD" {
+                mpd = Some(ele);
+            } else if ele.name == "BaseURL" {
+                if let Some(new_base_uri) = extract_base_uri(&ele, &root_uri) {
+                    base_uri = new_base_uri;
+                }
+            }
+        }
+
+        if let Some(mut mpd) = mpd {
+            let targets = prepare_dash_representations(&mut mpd, root_uri, base_uri);
+            self.active_targets.lock().await.extend(targets);
+
+            let mut new_body = Vec::new();
+            for node in nodes {
+                let XMLNode::Element(ele) = node else {
+                    continue;
+                };
+                ele.write(&mut new_body)?;
+            }
+
+            parts
+                .headers
+                .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
+            Ok(Response::from_parts(parts, full(new_body)))
+        } else {
+            Ok(Response::from_parts(parts, full(body_collected)))
+        }
+    }
+
+    pub async fn transcode_segments(
+        &self,
+        request_uri: Uri,
+        response: Response<Incoming>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        let active_targets = self.active_targets.lock().await;
+        for target in active_targets.iter() {
+            if let Some(resource) = uri_prefixes(&target.base_uri, &request_uri) {
+                if target.init_pattern.is_match(&resource) {
+                    eprintln!("init_pattern match: {}", resource);
+                } else if target.media_pattern.is_match(&resource) {
+                    eprintln!("media_pattern match: {}", resource);
+                }
+            }
+        }
+        Ok(response.map(|b| b.boxed()))
     }
 
     pub async fn process_response(
@@ -165,58 +262,13 @@ impl Transcoder {
         // request_uri should be full, absolute URI (i.e. has both scheme and authority)
         // since requests to HTTP proxies are supposed to have complete URIs
 
-        if response.headers().get(CONTENT_TYPE)
-            == Some(&HeaderValue::from_str("application/dash+xml").unwrap())
-        {
-            let (mut parts, body) = response.into_parts();
-            let body_collected = body.collect().await?;
-            let body_collected: Vec<u8> = body_collected.to_bytes().into_iter().collect();
-
-            let root_uri = request_uri.to_string();
-            let lash_slash = root_uri.rfind("/").unwrap_or(root_uri.len());
-            let root_uri = root_uri[..lash_slash].parse::<Uri>().unwrap();
-            let mut base_uri = root_uri.clone();
-
-            let mut mpd = None;
-            let Ok(mut nodes) = Element::parse_all(&body_collected[..]) else {
-                return Ok(Response::from_parts(parts, full(body_collected)));
-            };
-            for node in &mut nodes {
-                let XMLNode::Element(ele) = node else {
-                    continue;
-                };
-                if ele.name == "MPD" {
-                    mpd = Some(ele);
-                } else if ele.name == "BaseURL" {
-                    if let Some(new_base_uri) = extract_base_uri(&ele, &root_uri) {
-                        base_uri = new_base_uri;
-                    }
-                }
+        if let Some(content_type) = response.headers().get(CONTENT_TYPE) {
+            if content_type == HeaderValue::from_str("application/dash+xml").unwrap() {
+                return self.sniff_mpd(request_uri, response).await;
+            } else if content_type == HeaderValue::from_str("video/mp4").unwrap() {
+                return self.transcode_segments(request_uri, response).await;
             }
-
-            if let Some(mut mpd) = mpd {
-                let targets = prepare_dash_representations(&mut mpd, root_uri, base_uri);
-                for target in &targets {
-                    eprintln!("Got transcode target: {:?}", target);
-                }
-
-                let mut new_body = Vec::new();
-                for node in nodes {
-                    let XMLNode::Element(ele) = node else {
-                        continue;
-                    };
-                    ele.write(&mut new_body)?;
-                }
-
-                parts
-                    .headers
-                    .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
-                Ok(Response::from_parts(parts, full(new_body)))
-            } else {
-                Ok(Response::from_parts(parts, full(body_collected)))
-            }
-        } else {
-            Ok(response.map(|b| b.boxed()))
         }
+        Ok(response.map(|b| b.boxed()))
     }
 }
