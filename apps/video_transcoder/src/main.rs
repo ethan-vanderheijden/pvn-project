@@ -1,3 +1,5 @@
+mod dash_transcode;
+
 use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
@@ -9,6 +11,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto,
 };
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Parser)]
@@ -22,15 +25,18 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
 
     let client = Client::builder(TokioExecutor::new()).build_http::<hyper::body::Incoming>();
+    let dash_transcoder = Arc::new(dash_transcode::Transcoder::new());
 
     loop {
         let (stream, _) = listener.accept().await?;
         let client_2 = client.clone();
+        let transcoder_2 = dash_transcoder.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let service = service_fn(|req| {
-                let value = client_2.clone();
-                async move { proxy(value.clone(), req).await }
+                let client_temp = client_2.clone();
+                let transcoder_temp = transcoder_2.clone();
+                async move { proxy(client_temp.clone(), req, transcoder_temp).await }
             });
 
             if let Err(err) = auto::Builder::new(TokioExecutor::new())
@@ -46,6 +52,7 @@ async fn main() -> Result<()> {
 async fn proxy<C>(
     client: Client<C, hyper::body::Incoming>,
     req: Request<hyper::body::Incoming>,
+    transcoder: Arc<dash_transcode::Transcoder>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>
 where
     C: Connect + Clone + Send + Sync + 'static,
@@ -71,15 +78,24 @@ where
             Ok(resp)
         }
     } else {
+        let uri_clone = req.uri().clone();
         match client.request(req).await {
-            Ok(response) => Ok(response.map(|b| b.boxed())),
+            Ok(response) => match transcoder.process_response(uri_clone, response).await {
+                Ok(response) => {
+                    return Ok(response);
+                }
+                Err(err) => {
+                    eprintln!("Failed to parse upstream response: {err}");
+                }
+            },
             Err(err) => {
                 eprintln!("Failed to make upstream request: {err}");
-                let mut resp = Response::new(full(format!("Upstream request failed: {err}")));
-                *resp.status_mut() = StatusCode::GATEWAY_TIMEOUT;
-                Ok(resp)
             }
         }
+
+        let mut resp = Response::new(full(format!("Upstream request failed")));
+        *resp.status_mut() = StatusCode::GATEWAY_TIMEOUT;
+        Ok(resp)
     }
 }
 
@@ -90,13 +106,13 @@ async fn tunnel(upgraded: Upgraded, destination: String) -> Result<()> {
     Ok(())
 }
 
-fn empty() -> BoxBody<Bytes, hyper::Error> {
+pub fn empty() -> BoxBody<Bytes, hyper::Error> {
     Empty::<Bytes>::new()
         .map_err(|never| match never {})
         .boxed()
 }
 
-fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
+pub fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
     Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed()
