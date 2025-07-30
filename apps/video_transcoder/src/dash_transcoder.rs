@@ -140,6 +140,7 @@ fn prepare_dash_representations(
                 targets.push(TranscodeTarget {
                     init_pattern,
                     media_pattern,
+                    original_init_segment: None,
                     codecs: codecs.clone(),
                     base_uri: representation_base,
                 });
@@ -182,6 +183,7 @@ async fn read_response(response: Response<Incoming>) -> Result<(response::Parts,
 struct TranscodeTarget {
     init_pattern: Regex,
     media_pattern: Regex,
+    original_init_segment: Option<Vec<u8>>,
     codecs: String,
     base_uri: Uri,
 }
@@ -269,13 +271,14 @@ impl Transcoder {
         request_uri: Uri,
         response: Response<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        let active_targets = self.active_targets.lock().await;
-        for target in active_targets.iter() {
+        let mut active_targets = self.active_targets.lock().await;
+        for target in active_targets.iter_mut() {
             if let Some(resource) = uri_prefixes(&target.base_uri, &request_uri) {
                 if target.init_pattern.is_match(&resource) {
                     eprintln!("init_pattern match: {resource}");
                     let (mut parts, body) = read_response(response).await?;
                     let new_body = mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl).unwrap();
+                    target.original_init_segment = Some(body);
                     parts
                         .headers
                         .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));

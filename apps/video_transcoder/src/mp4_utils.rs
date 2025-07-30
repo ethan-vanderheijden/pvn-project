@@ -75,8 +75,12 @@ pub fn replace_stbl_atom(original_mp4: &[u8], mut new_stbl: &[u8]) -> Result<Vec
     }
     track.mdia.minf.stbl = new_stbl_atom;
 
-    let mut new_mp4 = Vec::new();
+    let leading_data = original_mp4[..moov_desc.start - 8].into_iter().cloned();
+    let trailing_data = original_mp4[moov_desc.end..].into_iter().cloned();
+
+    let mut new_mp4 = leading_data.collect::<Vec<u8>>();
     moov.write_to(&mut new_mp4)?;
+    new_mp4.extend(trailing_data);
 
     return Ok(new_mp4);
 }
