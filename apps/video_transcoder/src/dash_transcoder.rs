@@ -1,18 +1,20 @@
-use anyhow::Result;
+use crate::{full, mp4_utils};
+use anyhow::{Result, bail};
 use bytes::Bytes;
 use http::{
     HeaderValue, Response, Uri,
     header::{CONTENT_LENGTH, CONTENT_TYPE},
+    response,
 };
 use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::body::Incoming;
+use mp4_atom::{Atom, Moov, ReadAtom, WriteTo};
 use regex::Regex;
-use tokio::sync::Mutex;
+use tokio::{fs, sync::Mutex};
 use xmltree::{Element, XMLNode};
 
-use crate::full;
-
 const TARGET_CODEC: &str = "vp9";
+const VP9_MOOV_TEMPLATE: &str = "vp9_moov.mp4";
 
 fn extract_base_uri(ele: &Element, root_uri: &Uri) -> Option<Uri> {
     if let Some(base_url_ele) = ele.get_child("BaseURL") {
@@ -159,10 +161,21 @@ fn uri_prefixes(prefix: &Uri, test: &Uri) -> Option<String> {
         || test.authority().unwrap() == prefix.authority().unwrap();
     let path_prefixes = test.path().starts_with(prefix.path());
     if scheme_matches && authority_matches && path_prefixes {
-        Some(test.path()[prefix.path().len()..].trim_matches('/').to_string())
+        Some(
+            test.path()[prefix.path().len()..]
+                .trim_matches('/')
+                .to_string(),
+        )
     } else {
         None
     }
+}
+
+async fn read_response(response: Response<Incoming>) -> Result<(response::Parts, Vec<u8>)> {
+    let (parts, body) = response.into_parts();
+    let body_collected = body.collect().await?;
+    let body_collected: Vec<u8> = body_collected.to_bytes().into_iter().collect();
+    Ok((parts, body_collected))
 }
 
 #[derive(Debug, Clone)]
@@ -174,14 +187,31 @@ struct TranscodeTarget {
 }
 
 pub struct Transcoder {
+    vp9_stbl: Vec<u8>,
     active_targets: Mutex<Vec<TranscodeTarget>>,
 }
 
 impl Transcoder {
-    pub fn new() -> Self {
-        Transcoder {
+    pub async fn new() -> Result<Self> {
+        let template_data = fs::read(VP9_MOOV_TEMPLATE).await?;
+        let Some(moov) = mp4_utils::find_atom(&template_data, &Moov::KIND) else {
+            bail!("Can't find moov atom in template file");
+        };
+        let moov = Moov::read_atom(
+            &moov.header,
+            &mut moov.extract_from_unchecked(&template_data),
+        )?;
+        let Some(track) = moov.trak.first() else {
+            bail!("No tracks found in moov atom");
+        };
+        let stbl = &track.mdia.minf.stbl;
+        let mut stbl_data = Vec::new();
+        stbl.write_to(&mut stbl_data)?;
+
+        Ok(Transcoder {
+            vp9_stbl: stbl_data,
             active_targets: Mutex::new(Vec::new()),
-        }
+        })
     }
 
     async fn sniff_mpd(
@@ -189,9 +219,7 @@ impl Transcoder {
         request_uri: Uri,
         response: Response<Incoming>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        let (mut parts, body) = response.into_parts();
-        let body_collected = body.collect().await?;
-        let body_collected: Vec<u8> = body_collected.to_bytes().into_iter().collect();
+        let (mut parts, body) = read_response(response).await?;
 
         let root_uri = request_uri.to_string();
         let lash_slash = root_uri.rfind("/").unwrap_or(root_uri.len());
@@ -199,8 +227,8 @@ impl Transcoder {
         let mut base_uri = root_uri.clone();
 
         let mut mpd = None;
-        let Ok(mut nodes) = Element::parse_all(&body_collected[..]) else {
-            return Ok(Response::from_parts(parts, full(body_collected)));
+        let Ok(mut nodes) = Element::parse_all(&body[..]) else {
+            return Ok(Response::from_parts(parts, full(body)));
         };
         for node in &mut nodes {
             let XMLNode::Element(ele) = node else {
@@ -232,7 +260,7 @@ impl Transcoder {
                 .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
             Ok(Response::from_parts(parts, full(new_body)))
         } else {
-            Ok(Response::from_parts(parts, full(body_collected)))
+            Ok(Response::from_parts(parts, full(body)))
         }
     }
 
@@ -245,9 +273,15 @@ impl Transcoder {
         for target in active_targets.iter() {
             if let Some(resource) = uri_prefixes(&target.base_uri, &request_uri) {
                 if target.init_pattern.is_match(&resource) {
-                    eprintln!("init_pattern match: {}", resource);
+                    eprintln!("init_pattern match: {resource}");
+                    let (mut parts, body) = read_response(response).await?;
+                    let new_body = mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl).unwrap();
+                    parts
+                        .headers
+                        .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
+                    return Ok(Response::from_parts(parts, full(new_body)));
                 } else if target.media_pattern.is_match(&resource) {
-                    eprintln!("media_pattern match: {}", resource);
+                    eprintln!("media_pattern match: {resource}");
                 }
             }
         }

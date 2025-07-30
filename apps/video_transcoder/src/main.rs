@@ -1,4 +1,5 @@
-mod dash_transcode;
+mod dash_transcoder;
+mod mp4_utils;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -25,7 +26,7 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
 
     let client = Client::builder(TokioExecutor::new()).build_http::<hyper::body::Incoming>();
-    let dash_transcoder = Arc::new(dash_transcode::Transcoder::new());
+    let dash_transcoder = Arc::new(dash_transcoder::Transcoder::new().await?);
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -52,7 +53,7 @@ async fn main() -> Result<()> {
 async fn proxy<C>(
     client: Client<C, hyper::body::Incoming>,
     req: Request<hyper::body::Incoming>,
-    transcoder: Arc<dash_transcode::Transcoder>,
+    transcoder: Arc<dash_transcoder::Transcoder>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>
 where
     C: Connect + Clone + Send + Sync + 'static,
