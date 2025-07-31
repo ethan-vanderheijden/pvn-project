@@ -113,9 +113,6 @@ fn prepare_dash_representations(
                 let Some(bandwidth) = representation.attributes.get("bandwidth") else {
                     continue;
                 };
-                let Some(codecs) = representation.attributes.get("codecs") else {
-                    continue;
-                };
                 let Some(seg_template) = representation.get_child("SegmentTemplate") else {
                     continue;
                 };
@@ -141,7 +138,6 @@ fn prepare_dash_representations(
                     init_pattern,
                     media_pattern,
                     original_init_segment: None,
-                    codecs: codecs.clone(),
                     base_uri: representation_base,
                 });
                 representation
@@ -184,7 +180,6 @@ struct TranscodeTarget {
     init_pattern: Regex,
     media_pattern: Regex,
     original_init_segment: Option<Vec<u8>>,
-    codecs: String,
     base_uri: Uri,
 }
 
@@ -273,19 +268,47 @@ impl Transcoder {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         let mut active_targets = self.active_targets.lock().await;
         for target in active_targets.iter_mut() {
-            if let Some(resource) = uri_prefixes(&target.base_uri, &request_uri) {
-                if target.init_pattern.is_match(&resource) {
-                    eprintln!("init_pattern match: {resource}");
-                    let (mut parts, body) = read_response(response).await?;
-                    let new_body = mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl).unwrap();
-                    target.original_init_segment = Some(body);
-                    parts
-                        .headers
-                        .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
-                    return Ok(Response::from_parts(parts, full(new_body)));
-                } else if target.media_pattern.is_match(&resource) {
-                    eprintln!("media_pattern match: {resource}");
-                }
+            let resource = match uri_prefixes(&target.base_uri, &request_uri) {
+                Some(resource) => resource,
+                None => continue,
+            };
+
+            if target.init_pattern.is_match(&resource) {
+                let (mut parts, body) = read_response(response).await?;
+                let new_body = match mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl) {
+                    Ok(new_body) => new_body,
+                    Err(err) => {
+                        eprintln!("Failed to replace stbl atom: {err}");
+                        return Ok(Response::from_parts(parts, full(body)));
+                    }
+                };
+                target.original_init_segment = Some(body);
+
+                parts
+                    .headers
+                    .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
+                return Ok(Response::from_parts(parts, full(new_body)));
+            } else if target.media_pattern.is_match(&resource)
+                && target.original_init_segment.is_some()
+            {
+                let (mut parts, body) = read_response(response).await?;
+                let new_body = match mp4_utils::transcode_segment(
+                    target.original_init_segment.as_ref().unwrap(),
+                    &body,
+                )
+                .await
+                {
+                    Ok(new_body) => new_body,
+                    Err(err) => {
+                        eprintln!("Failed to transcode segment: {err}");
+                        return Ok(Response::from_parts(parts, full(body)));
+                    }
+                };
+
+                parts
+                    .headers
+                    .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
+                return Ok(Response::from_parts(parts, full(new_body)));
             }
         }
         Ok(response.map(|b| b.boxed()))
