@@ -14,19 +14,37 @@ use hyper_util::{
 };
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+use tracing::{Level, warn};
 
 #[derive(Parser)]
 struct Args {
+    #[clap(long, default_value = "4000", help = "Port to run the HTTP proxy on")]
     port: u16,
+    #[clap(help = "Path to the GStreamer transcoding helper executable")]
+    gstreamer_transcoder_path: String,
+    #[clap(
+        help = "Path to an example VP9 mp4 file produced by GStreamer that contains a Moov atom"
+    )]
+    vp9_template_path: String,
 }
 
+/// Starts a standards compliant HTTP proxy. MPEG-DASH streams are sniffed out and
+/// transparently transcoded to VP9.
 #[tokio::main]
 async fn main() -> Result<()> {
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)?;
+
     let args = Args::parse();
     let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
 
     let client = Client::builder(TokioExecutor::new()).build_http::<hyper::body::Incoming>();
-    let dash_transcoder = Arc::new(dash_transcoder::Transcoder::new().await?);
+    let dash_transcoder = Arc::new(
+        dash_transcoder::Transcoder::new(&args.vp9_template_path, args.gstreamer_transcoder_path)
+            .await?,
+    );
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -44,12 +62,15 @@ async fn main() -> Result<()> {
                 .serve_connection_with_upgrades(io, service)
                 .await
             {
-                eprintln!("Failed to serve connection: {:?}", err);
+                warn!("Failed to serve connection: {:?}", err);
             }
         });
     }
 }
 
+/// Handle HTTP Proxy requests received over a single downstream connection.
+/// HTTPS CONNECT requests are tunneled as usual while HTTP requests are examined
+/// to see if it is part of an MPEG-DASH streams.
 async fn proxy<C>(
     client: Client<C, hyper::body::Incoming>,
     req: Request<hyper::body::Incoming>,
@@ -65,15 +86,15 @@ where
                 match hyper::upgrade::on(req).await {
                     Ok(upgraded) => {
                         if let Err(e) = tunnel(upgraded, addr).await {
-                            eprintln!("IO error while tunneling: {}", e);
+                            warn!("IO error during CONNECT tunnel: {}", e);
                         };
                     }
-                    Err(e) => eprintln!("Failed to upgrade on CONNECT: {}", e),
+                    Err(e) => warn!("Failed to upgrade on CONNECT: {}", e),
                 }
             });
             Ok(Response::new(empty()))
         } else {
-            eprintln!("CONNECT host is not socket addr: {:?}", req.uri());
+            warn!("CONNECT host is not socket addr: {:?}", req.uri());
             let mut resp = Response::new(full("CONNECT must be to a socket address"));
             *resp.status_mut() = StatusCode::BAD_REQUEST;
             Ok(resp)
@@ -86,11 +107,11 @@ where
                     return Ok(response);
                 }
                 Err(err) => {
-                    eprintln!("Failed to parse upstream response: {err}");
+                    warn!("Failed to parse upstream response: {err}");
                 }
             },
             Err(err) => {
-                eprintln!("Failed to make upstream request: {err}");
+                warn!("Failed to make upstream request: {err}");
             }
         }
 
@@ -107,12 +128,14 @@ async fn tunnel(upgraded: Upgraded, destination: String) -> Result<()> {
     Ok(())
 }
 
+/// Helper function to create an empty response body.
 pub fn empty() -> BoxBody<Bytes, hyper::Error> {
     Empty::<Bytes>::new()
         .map_err(|never| match never {})
         .boxed()
 }
 
+/// Helper function to create a response body from data in memory.
 pub fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
     Full::new(chunk.into())
         .map_err(|never| match never {})

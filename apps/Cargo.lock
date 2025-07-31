@@ -4352,6 +4352,8 @@ dependencies = [
  "mp4-atom",
  "regex",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "xmltree",
 ]
 

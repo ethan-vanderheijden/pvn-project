@@ -15,4 +15,6 @@ hyper-util = { version = "0.1.16", features = ["client", "client-legacy", "http1
 mp4-atom = "0.8.1"
 regex = "1.11.1"
 tokio = { version = "1.47.0", features = ["fs", "macros", "net", "process", "rt-multi-thread"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
 xmltree = "0.11.0"

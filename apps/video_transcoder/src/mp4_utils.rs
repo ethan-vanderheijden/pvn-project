@@ -4,9 +4,10 @@ use anyhow::{Result, bail};
 use mp4_atom::{Atom, FourCC, Header, Moov, ReadAtom, ReadFrom, Stbl, WriteTo};
 use tokio::{io::AsyncWriteExt, process::Command};
 
-// makes timestamps for common framerates integral
+// results in integral timestamps for common framerates
 const TARGET_TIMESCALE: u32 = 24 * 25 * 30;
 
+/// Describes the position of an atom in an MP4 file.
 #[derive(Debug, Clone)]
 pub struct AtomDescription {
     pub header: Header,
@@ -15,6 +16,8 @@ pub struct AtomDescription {
 }
 
 impl AtomDescription {
+    /// Extracts the atom's data from the MP4 file buffer, assuming the buffer was
+    /// where the atom was originally found.
     pub fn extract_from<'a>(&self, buffer: &'a [u8]) -> Option<&'a [u8]> {
         if self.start <= buffer.len() && self.end <= buffer.len() {
             Some(&buffer[self.start..self.end])
@@ -28,6 +31,8 @@ impl AtomDescription {
     }
 }
 
+/// Searches through all top-level atoms in the MP4 file buffer and returns the first atom
+/// that matches the specified FourCC code.
 pub fn find_atom(data: &[u8], atom: &FourCC) -> Option<AtomDescription> {
     let mut offset = 0;
     while offset < data.len() {
@@ -51,6 +56,8 @@ pub fn find_atom(data: &[u8], atom: &FourCC) -> Option<AtomDescription> {
     None
 }
 
+/// Replaces the Stbl atom in all tracks of the MP4 file buffer `original_mp4` with
+/// the new Stbl atom `new_stbl`.
 pub fn replace_stbl_atom(original_mp4: &[u8], mut new_stbl: &[u8]) -> Result<Vec<u8>> {
     let Some(moov_desc) = find_atom(original_mp4, &Moov::KIND) else {
         bail!("No moov atom found in the MP4 file");
@@ -94,8 +101,10 @@ pub fn replace_stbl_atom(original_mp4: &[u8], mut new_stbl: &[u8]) -> Result<Vec
     return Ok(new_mp4);
 }
 
-pub async fn transcode_segment(init_segment: &[u8], video_segment: &[u8]) -> Result<Vec<u8>> {
-    let mut gstreamer = Command::new("./gst_transcode");
+/// Transcodes `video_segment` to VP9 using the GStreamer helper executable `gst_transcoder`.
+/// `init_segment` must contain a Moov atom that described `video_segment`.
+pub async fn transcode_segment(init_segment: &[u8], video_segment: &[u8], gst_transcoder: &str) -> Result<Vec<u8>> {
+    let mut gstreamer = Command::new(gst_transcoder);
     gstreamer
         .arg(TARGET_TIMESCALE.to_string())
         .stdout(Stdio::piped())

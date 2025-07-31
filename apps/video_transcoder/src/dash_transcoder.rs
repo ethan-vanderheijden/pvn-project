@@ -11,11 +11,14 @@ use hyper::body::Incoming;
 use mp4_atom::{Atom, Moov, ReadAtom, WriteTo};
 use regex::Regex;
 use tokio::{fs, sync::Mutex};
+use tracing::warn;
 use xmltree::{Element, XMLNode};
 
 const TARGET_CODEC: &str = "vp9";
-const VP9_MOOV_TEMPLATE: &str = "vp9_moov.mp4";
 
+/// Checks if the element contains a <BaseUrl> element. If so, extracts the URL from it, and
+/// if it is a relative URL, prepends the root URI. The returned URL is gaurenteed to have
+/// both a scheme and authority.
 fn extract_base_uri(ele: &Element, root_uri: &Uri) -> Option<Uri> {
     if let Some(base_url_ele) = ele.get_child("BaseURL") {
         if let Some(text) = base_url_ele.get_text() {
@@ -49,6 +52,7 @@ fn extract_base_uri(ele: &Element, root_uri: &Uri) -> Option<Uri> {
     None
 }
 
+/// Returns an iterator over all child elements with the specified tag name.
 fn filter_children<'a>(ele: &'a mut Element, name: &str) -> impl Iterator<Item = &'a mut Element> {
     ele.children.iter_mut().filter_map(move |child| {
         if let XMLNode::Element(e) = child {
@@ -59,6 +63,8 @@ fn filter_children<'a>(ele: &'a mut Element, name: &str) -> impl Iterator<Item =
     })
 }
 
+/// URLs inside <SegmentTemplate> can contain variables. This helper function generates a regex
+/// pattern that matches those URLs, e.g. a numeric variable is represented as `\d+`.
 fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) -> Option<Regex> {
     // TODO: naive resolution doesn't support escaped characters (i.e. "$$")
     // or formatted width (i.e. "$...%[width]d$")
@@ -74,6 +80,10 @@ fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) ->
     Regex::new(&format!(r"^{pattern}$")).ok()
 }
 
+/// Scans through MPD file and finds all representations described with SegmentTemplate.
+/// Extracts the URL of the initialization/media segments of the representation based on
+/// the appropriate <BaseUrl> element, if present. Will modify any found representation
+/// and change the codec to VP9.
 fn prepare_dash_representations(
     mpd: &mut Element,
     root_uri: Uri,
@@ -149,6 +159,8 @@ fn prepare_dash_representations(
     targets
 }
 
+/// Checks if `prefix` is a prefix of `test`. If so, returns the suffix of `test`
+/// not found in `prefix`.
 fn uri_prefixes(prefix: &Uri, test: &Uri) -> Option<String> {
     let scheme_matches = test.scheme().is_none()
         || prefix.scheme().is_none()
@@ -175,6 +187,10 @@ async fn read_response(response: Response<Incoming>) -> Result<(response::Parts,
     Ok((parts, body_collected))
 }
 
+/// Represents DASH stream representation. A single MPD file can hold multiple TranscodeTargets.
+/// A stream representation is broken into two parts:
+/// 1. Initialization segment, which contains the Moov atom
+/// 2. Media segments, which contain the Mdat atoms
 #[derive(Debug, Clone)]
 struct TranscodeTarget {
     init_pattern: Regex,
@@ -183,14 +199,20 @@ struct TranscodeTarget {
     base_uri: Uri,
 }
 
+/// Transcoder that tracks active MPEG-DASH streams and silently transcodes them to VP9.
 pub struct Transcoder {
     vp9_stbl: Vec<u8>,
     active_targets: Mutex<Vec<TranscodeTarget>>,
+    gst_transcode_exe: String,
 }
 
 impl Transcoder {
-    pub async fn new() -> Result<Self> {
-        let template_data = fs::read(VP9_MOOV_TEMPLATE).await?;
+    /// Creates a new Transcoder instance. DASH streams start with an initialization segment,
+    /// containing a Moov atom that describes the video codec. We inject the VP9 codec described in
+    /// the Moov atom inside `vp9_template` into the initialization segment. The actual transcoding
+    /// is performed by the GStreamer helper executable `gst_transcoder_exe`.
+    pub async fn new(vp9_template: &str, gst_transcode_exe: String) -> Result<Self> {
+        let template_data = fs::read(vp9_template).await?;
         let Some(moov) = mp4_utils::find_atom(&template_data, &Moov::KIND) else {
             bail!("Can't find moov atom in template file");
         };
@@ -208,9 +230,12 @@ impl Transcoder {
         Ok(Transcoder {
             vp9_stbl: stbl_data,
             active_targets: Mutex::new(Vec::new()),
+            gst_transcode_exe,
         })
     }
 
+    /// Reads the MPD file and prepares to sniff out the MP4 segments described in it.
+    /// Only support On-Demand profiles describe using SegmentTemplate.
     async fn sniff_mpd(
         &self,
         request_uri: Uri,
@@ -261,6 +286,7 @@ impl Transcoder {
         }
     }
 
+    /// Checks if the MP4 segment matches any known TranscodeTarget, and if so, transcodes it to VP9.
     pub async fn transcode_segments(
         &self,
         request_uri: Uri,
@@ -278,7 +304,7 @@ impl Transcoder {
                 let new_body = match mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl) {
                     Ok(new_body) => new_body,
                     Err(err) => {
-                        eprintln!("Failed to replace stbl atom: {err}");
+                        warn!("Failed to replace Stbl atom in initialization segment: {err}");
                         return Ok(Response::from_parts(parts, full(body)));
                     }
                 };
@@ -291,16 +317,23 @@ impl Transcoder {
             } else if target.media_pattern.is_match(&resource)
                 && target.original_init_segment.is_some()
             {
+                // MUST drop active_targets before transcoding because it takes a long time and
+                // will block other actions
+                // that said, we could probably refactor to remove the cloning
+                let original_init_segment = target.original_init_segment.as_ref().unwrap().clone();
+                drop(active_targets);
+
                 let (mut parts, body) = read_response(response).await?;
                 let new_body = match mp4_utils::transcode_segment(
-                    target.original_init_segment.as_ref().unwrap(),
+                    &original_init_segment,
                     &body,
+                    &self.gst_transcode_exe,
                 )
                 .await
                 {
                     Ok(new_body) => new_body,
                     Err(err) => {
-                        eprintln!("Failed to transcode segment: {err}");
+                        warn!("Failed to transcode segment: {err}");
                         return Ok(Response::from_parts(parts, full(body)));
                     }
                 };
@@ -314,6 +347,10 @@ impl Transcoder {
         Ok(response.map(|b| b.boxed()))
     }
 
+    /// Sniffs the HTTP response and checks if it corresponds to an MPEG-DASH stream.
+    /// Will process MPD files (i.e. `application/dash+xml`) and MP4 segments corresponding
+    /// to known MPD files. Either returns the original response or a response transcoded
+    /// to VP9.
     pub async fn process_response(
         &self,
         request_uri: Uri,
