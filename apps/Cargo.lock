@@ -4345,6 +4345,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "clap",
+ "flate2",
  "http",
  "http-body-util",
  "hyper",

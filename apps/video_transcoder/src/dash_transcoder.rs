@@ -1,20 +1,22 @@
 use crate::{full, mp4_utils};
 use anyhow::{Result, bail};
 use bytes::Bytes;
+use flate2::read::GzDecoder;
 use http::{
     HeaderValue, Response, Uri,
-    header::{CONTENT_LENGTH, CONTENT_TYPE},
+    header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
     response,
 };
 use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::body::Incoming;
 use mp4_atom::{Atom, Moov, ReadAtom, WriteTo};
 use regex::Regex;
+use std::io::Read;
 use tokio::{fs, sync::Mutex};
-use tracing::warn;
+use tracing::{warn};
 use xmltree::{Element, XMLNode};
 
-const TARGET_CODEC: &str = "vp9";
+const TARGET_CODEC: &str = "vp09.00.10.08";
 
 /// Checks if the element contains a <BaseUrl> element. If so, extracts the URL from it, and
 /// if it is a relative URL, prepends the root URI. The returned URL is gaurenteed to have
@@ -65,6 +67,7 @@ fn filter_children<'a>(ele: &'a mut Element, name: &str) -> impl Iterator<Item =
 
 /// URLs inside <SegmentTemplate> can contain variables. This helper function generates a regex
 /// pattern that matches those URLs, e.g. a numeric variable is represented as `\d+`.
+/// $Number$ is converted into a capture group.
 fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) -> Option<Regex> {
     // TODO: naive resolution doesn't support escaped characters (i.e. "$$")
     // or formatted width (i.e. "$...%[width]d$")
@@ -74,7 +77,7 @@ fn resolve_template(template: &str, representation_id: &str, bandwidth: &str) ->
             .replace("$Bandwidth$", bandwidth),
     );
     let pattern = pattern
-        .replace("\\$Number\\$", "\\d+")
+        .replace("\\$Number\\$", "(\\d+)")
         .replace("\\$Time\\$", "\\d+")
         .replace("\\$SubNumber\\$", "\\d+");
     Regex::new(&format!(r"^{pattern}$")).ok()
@@ -126,6 +129,18 @@ fn prepare_dash_representations(
                 let Some(seg_template) = representation.get_child("SegmentTemplate") else {
                     continue;
                 };
+                let Some(timescale) = seg_template.attributes.get("timescale") else {
+                    continue;
+                };
+                let Ok(timescale) = timescale.parse::<u32>() else {
+                    continue;
+                };
+                let Some(duration) = seg_template.attributes.get("duration") else {
+                    continue;
+                };
+                let Ok(duration) = duration.parse::<u32>() else {
+                    continue;
+                };
                 let Some(init_template) = seg_template.attributes.get("initialization") else {
                     continue;
                 };
@@ -149,6 +164,8 @@ fn prepare_dash_representations(
                     media_pattern,
                     original_init_segment: None,
                     base_uri: representation_base,
+                    timescale,
+                    duration,
                 });
                 representation
                     .attributes
@@ -181,10 +198,30 @@ fn uri_prefixes(prefix: &Uri, test: &Uri) -> Option<String> {
 }
 
 async fn read_response(response: Response<Incoming>) -> Result<(response::Parts, Vec<u8>)> {
-    let (parts, body) = response.into_parts();
+    let (mut parts, body) = response.into_parts();
+    parts.headers.remove(TRANSFER_ENCODING);
     let body_collected = body.collect().await?;
     let body_collected: Vec<u8> = body_collected.to_bytes().into_iter().collect();
-    Ok((parts, body_collected))
+
+    if let Some(encoding) = parts.headers.get(CONTENT_ENCODING) {
+        if encoding == HeaderValue::from_static("gzip") {
+            let mut decompressed = Vec::new();
+            GzDecoder::new(&body_collected[..]).read_to_end(&mut decompressed)?;
+            parts.headers.remove(CONTENT_ENCODING);
+            parts
+                .headers
+                .insert(CONTENT_LENGTH, HeaderValue::from(decompressed.len()));
+            Ok((parts, decompressed))
+        } else {
+            // this should never happen because we set Accept-Encoding of upstream requests to gzip
+            bail!(
+                "Trying to read response with unsupported content encoding: {:?}",
+                encoding
+            );
+        }
+    } else {
+        Ok((parts, body_collected))
+    }
 }
 
 /// Represents DASH stream representation. A single MPD file can hold multiple TranscodeTargets.
@@ -197,6 +234,8 @@ struct TranscodeTarget {
     media_pattern: Regex,
     original_init_segment: Option<Vec<u8>>,
     base_uri: Uri,
+    timescale: u32,
+    duration: u32,
 }
 
 /// Transcoder that tracks active MPEG-DASH streams and silently transcodes them to VP9.
@@ -249,9 +288,14 @@ impl Transcoder {
         let mut base_uri = root_uri.clone();
 
         let mut mpd = None;
-        let Ok(mut nodes) = Element::parse_all(&body[..]) else {
-            return Ok(Response::from_parts(parts, full(body)));
+        let mut nodes = match Element::parse_all(&body[..]) {
+            Ok(nodes) => nodes,
+            Err(err) => {
+                warn!("Failed to parse MPD file: {:?}", err);
+                return Ok(Response::from_parts(parts, full(body)));
+            }
         };
+
         for node in &mut nodes {
             let XMLNode::Element(ele) = node else {
                 continue;
@@ -282,6 +326,7 @@ impl Transcoder {
                 .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
             Ok(Response::from_parts(parts, full(new_body)))
         } else {
+            warn!("Could not find <MPD> element in the MPD file");
             Ok(Response::from_parts(parts, full(body)))
         }
     }
@@ -301,22 +346,33 @@ impl Transcoder {
 
             if target.init_pattern.is_match(&resource) {
                 let (mut parts, body) = read_response(response).await?;
-                let new_body = match mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl) {
-                    Ok(new_body) => new_body,
-                    Err(err) => {
-                        warn!("Failed to replace Stbl atom in initialization segment: {err}");
-                        return Ok(Response::from_parts(parts, full(body)));
-                    }
-                };
+                let new_body =
+                    match mp4_utils::replace_stbl_atom(&body, &self.vp9_stbl, target.timescale) {
+                        Ok(new_body) => new_body,
+                        Err(err) => {
+                            warn!("Failed to replace Stbl atom in initialization segment: {err}");
+                            return Ok(Response::from_parts(parts, full(body)));
+                        }
+                    };
                 target.original_init_segment = Some(body);
 
                 parts
                     .headers
                     .insert(CONTENT_LENGTH, HeaderValue::from(new_body.len()));
                 return Ok(Response::from_parts(parts, full(new_body)));
-            } else if target.media_pattern.is_match(&resource)
-                && target.original_init_segment.is_some()
-            {
+            } else if let Some(captures) = target.media_pattern.captures(&resource) {
+                if target.original_init_segment.is_none() {
+                    warn!("Found media segment before initialization segment");
+                    continue;
+                }
+                let Some(segment_number) = captures.get(1) else {
+                    warn!("Found media segment but don't know the segment number. Can't proceed.");
+                    continue;
+                };
+                let segment_number = segment_number.as_str().parse::<u32>().unwrap_or(1);
+
+                let timescale = target.timescale;
+                let segment_durations = target.duration;
                 // MUST drop active_targets before transcoding because it takes a long time and
                 // will block other actions
                 // that said, we could probably refactor to remove the cloning
@@ -327,6 +383,9 @@ impl Transcoder {
                 let new_body = match mp4_utils::transcode_segment(
                     &original_init_segment,
                     &body,
+                    timescale,
+                    segment_number,
+                    segment_durations,
                     &self.gst_transcode_exe,
                 )
                 .await

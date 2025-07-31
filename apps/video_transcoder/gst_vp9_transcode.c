@@ -3,30 +3,36 @@
 #include <stdlib.h>
 
 int main(int argc, char *argv[]) {
-    unsigned int target_timescale = 1000;
-    if (argc < 2) {
-        g_printerr("Usage: %s <target_timescale>\n", argv[0]);
+    if (argc != 3) {
+        g_printerr("Usage: %s <target timescale> <segment number>\n", argv[0]);
         return 1;
-    } else {
-        target_timescale = strtoul(argv[1], NULL, 10);
-        if (target_timescale == 0) {
-            g_printerr("Invalid target timescale");
-            return 1;
-        }
     }
+
+    unsigned int target_timescale = strtoul(argv[1], NULL, 10);
+    if (target_timescale == 0) {
+        g_printerr("Invalid target timescale");
+        return 1;
+    }
+
+    unsigned long segment_number = strtoul(argv[2], NULL, 10);
+    if (segment_number == 0) {
+        g_printerr("Invalid segment number");
+        return 1;
+    }
+
     gst_init(NULL, NULL);
 
     char *pipeline_desc;
-    asprintf(
-        &pipeline_desc,
-        "fdsrc !"
-        "decodebin !"
-        "videoconvert !"
-        "vp9enc row-mt=true min-quantizer=1 max-quantizer=15 !"
-        "vp9parse !"
-        "dashmp4mux name=muxer manual-split=true movie-timescale=%u !"
-        "fdsink",
-        target_timescale);
+    asprintf(&pipeline_desc,
+             "fdsrc !"
+             "decodebin !"
+             "videoconvert !"
+             "vp9enc row-mt=true min-quantizer=1 max-quantizer=25 !"
+             "vp9parse !"
+             "dashmp4mux name=muxer manual-split=true movie-timescale=%lu "
+             "start-fragment-sequence-number=%lu decode-time-offset=%llu !"
+             "fdsink",
+             target_timescale, segment_number);
     GstElement *pipeline = gst_parse_launch(pipeline_desc, NULL);
     g_assert(pipeline != NULL);
 

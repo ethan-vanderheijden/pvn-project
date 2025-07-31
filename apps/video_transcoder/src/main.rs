@@ -4,7 +4,7 @@ mod mp4_utils;
 use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
-use http::StatusCode;
+use http::{header::ACCEPT_ENCODING, HeaderValue, StatusCode};
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::{Method, Request, Response, service::service_fn, upgrade::Upgraded};
 use hyper_util::{
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
 /// to see if it is part of an MPEG-DASH streams.
 async fn proxy<C>(
     client: Client<C, hyper::body::Incoming>,
-    req: Request<hyper::body::Incoming>,
+    mut req: Request<hyper::body::Incoming>,
     transcoder: Arc<dash_transcoder::Transcoder>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error>
 where
@@ -101,6 +101,7 @@ where
         }
     } else {
         let uri_clone = req.uri().clone();
+        req.headers_mut().insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
         match client.request(req).await {
             Ok(response) => match transcoder.process_response(uri_clone, response).await {
                 Ok(response) => {

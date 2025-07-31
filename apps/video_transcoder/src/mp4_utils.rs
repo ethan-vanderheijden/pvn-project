@@ -1,11 +1,8 @@
 use std::process::Stdio;
 
 use anyhow::{Result, bail};
-use mp4_atom::{Atom, FourCC, Header, Moov, ReadAtom, ReadFrom, Stbl, WriteTo};
+use mp4_atom::{Atom, FourCC, Header, Moov, ReadAtom, ReadFrom, Stbl, Traf, WriteTo};
 use tokio::{io::AsyncWriteExt, process::Command};
-
-// results in integral timestamps for common framerates
-const TARGET_TIMESCALE: u32 = 24 * 25 * 30;
 
 /// Describes the position of an atom in an MP4 file.
 #[derive(Debug, Clone)]
@@ -58,7 +55,11 @@ pub fn find_atom(data: &[u8], atom: &FourCC) -> Option<AtomDescription> {
 
 /// Replaces the Stbl atom in all tracks of the MP4 file buffer `original_mp4` with
 /// the new Stbl atom `new_stbl`.
-pub fn replace_stbl_atom(original_mp4: &[u8], mut new_stbl: &[u8]) -> Result<Vec<u8>> {
+pub fn replace_stbl_atom(
+    original_mp4: &[u8],
+    mut new_stbl: &[u8],
+    timescale: u32,
+) -> Result<Vec<u8>> {
     let Some(moov_desc) = find_atom(original_mp4, &Moov::KIND) else {
         bail!("No moov atom found in the MP4 file");
     };
@@ -67,11 +68,10 @@ pub fn replace_stbl_atom(original_mp4: &[u8], mut new_stbl: &[u8]) -> Result<Vec
         &moov_desc.header,
         &mut moov_desc.extract_from_unchecked(original_mp4),
     )?;
-    moov.mvhd.timescale = TARGET_TIMESCALE;
 
     let new_stbl_atom = Stbl::read_from(&mut new_stbl)?;
     for track in &mut moov.trak {
-        track.mdia.mdhd.timescale = TARGET_TIMESCALE;
+        track.mdia.mdhd.timescale = timescale;
 
         let width = track.tkhd.width.integer();
         let height = track.tkhd.height.integer();
@@ -103,10 +103,18 @@ pub fn replace_stbl_atom(original_mp4: &[u8], mut new_stbl: &[u8]) -> Result<Vec
 
 /// Transcodes `video_segment` to VP9 using the GStreamer helper executable `gst_transcoder`.
 /// `init_segment` must contain a Moov atom that described `video_segment`.
-pub async fn transcode_segment(init_segment: &[u8], video_segment: &[u8], gst_transcoder: &str) -> Result<Vec<u8>> {
+pub async fn transcode_segment(
+    init_segment: &[u8],
+    video_segment: &[u8],
+    timescale: u32,
+    segment_number: u32,
+    segment_durations: u32,
+    gst_transcoder: &str,
+) -> Result<Vec<u8>> {
     let mut gstreamer = Command::new(gst_transcoder);
     gstreamer
-        .arg(TARGET_TIMESCALE.to_string())
+        .arg(timescale.to_string())
+        .arg(segment_number.to_string())
         .stdout(Stdio::piped())
         .stdin(Stdio::piped())
         .stderr(Stdio::null());
@@ -128,7 +136,33 @@ pub async fn transcode_segment(init_segment: &[u8], video_segment: &[u8], gst_tr
         let Some(moov_desc) = find_atom(&transcoded, &Moov::KIND) else {
             bail!("No moov atom found in the transcoded output");
         };
-        transcoded.drain(..moov_desc.end);
+        drop(transcoded.drain(..moov_desc.end));
+
+        let Some(moof_desc) = find_atom(&transcoded, &mp4_atom::Moof::KIND) else {
+            bail!("No moof atom found in the transcoded output");
+        };
+        let Some(mut traf_desc) =
+            find_atom(moof_desc.extract_from_unchecked(&transcoded), &Traf::KIND)
+        else {
+            bail!("No traf atom found in the transcoded output");
+        };
+        traf_desc.start += moof_desc.start;
+        traf_desc.end += moof_desc.start;
+        let Some(mut tfdt) = find_atom(
+            traf_desc.extract_from_unchecked(&transcoded),
+            &mp4_atom::Tfdt::KIND,
+        ) else {
+            bail!("No tfdt atom found in the transcoded output");
+        };
+        tfdt.start += traf_desc.start;
+        tfdt.end += traf_desc.start;
+
+        let base_media_decode_time = ((segment_number - 1) * segment_durations).to_be_bytes();
+        // Warning: mp4_atom uses Tfdt version 1 (uses u64), but Gstreamer uses version 0 (uses u32)
+        // so we manually write u32 into the file buffer
+        // also, Tfdt header is 12 bytes
+        transcoded[tfdt.start + 4..tfdt.start + 8].copy_from_slice(&base_media_decode_time);
+
         Ok(transcoded)
     }
 }
