@@ -5,16 +5,28 @@ import requests
 
 API_URL = "http://controller:11133/v1"
 
-if len(sys.argv) < 2 or len(sys.argv) > 3:
-    print('Usage: ./out_of_band_pvn <client_ip> [image = "ethanvdh/ubuntu-full"]')
+if len(sys.argv) < 2:
+    print('Usage: ./out_of_band_pvn.py <client_ip> [image = "ethanvdh/ubuntu-full"] [args...]')
     sys.exit(1)
 
 image = "ethanvdh/ubuntu-full"
-if len(sys.argv) == 3:
+if len(sys.argv) >= 3:
     image = sys.argv[2]
 
+args = None
+if len(sys.argv) > 3:
+    args = sys.argv[3:]
+
+
+app_description = image
+if args:
+    app_description = {
+        "image": image,
+        "args": args,
+    }
+
 pvn = {
-    "apps": [image],
+    "apps": [app_description],
     "chains": [
         {
             "origin": -1,

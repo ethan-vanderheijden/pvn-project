@@ -13,7 +13,28 @@ PVN_SCHEMA = {
             "description": "Applications to be instantiated along the service chain.",
             "type": "array",
             "items": {
-                "type": "string",
+                "description": "Application image name with or without arguments.",
+                "oneOf": [
+                    {
+                        "type": "string",
+                        "description": "Application image name.",
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "image": {
+                                "type": "string",
+                                "description": "Application image name.",
+                            },
+                            "args": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Arguments to pass to the application.",
+                            },
+                        },
+                        "required": ["image"],
+                    },
+                ],
             },
             "minItems": 1,
         },
@@ -296,7 +317,14 @@ def _start_pvn(client_ip, ethertype, pvn_id, pvn_json):
 
         app_threads = []
         for i, app in enumerate(pvn_json["apps"]):
-            app_threads.append(spawn(_create_container, ports[i]["id"], app, client_ip))
+            image = None
+            args = []
+            if isinstance(app, dict):
+                image = app["image"]
+                args = app["args"]
+            else:
+                image = app
+            app_threads.append(spawn(_create_container, ports[i]["id"], image, *args))
         app_ids = [thread.wait() for thread in app_threads]
         model.set_apps(pvn_id, app_ids)
 

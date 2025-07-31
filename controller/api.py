@@ -8,7 +8,11 @@ api = Blueprint("api", __name__, url_prefix="/v1")
 
 @api.route("/pvn/<id>", methods=["GET"])
 def get_pvn(id):
-    return model.get_pvn(int(id))
+    data = model.get_pvn(int(id))
+    if data:
+        return data
+    else:
+        return "PVN not found", 404
 
 
 @api.route("/pvn", methods=["POST"])
