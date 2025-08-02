@@ -8,7 +8,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    unsigned int target_timescale = strtoul(argv[1], NULL, 10);
+    unsigned long target_timescale = strtoul(argv[1], NULL, 10);
     if (target_timescale == 0) {
         g_printerr("Invalid target timescale");
         return 1;
@@ -30,7 +30,7 @@ int main(int argc, char *argv[]) {
              "vp9enc row-mt=true min-quantizer=1 max-quantizer=25 !"
              "vp9parse !"
              "dashmp4mux name=muxer manual-split=true movie-timescale=%lu "
-             "start-fragment-sequence-number=%lu decode-time-offset=%llu !"
+             "start-fragment-sequence-number=%lu !"
              "fdsink",
              target_timescale, segment_number);
     GstElement *pipeline = gst_parse_launch(pipeline_desc, NULL);

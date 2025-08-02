@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let args = Args::parse();
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", args.port)).await?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", args.port)).await?;
 
     let client = Client::builder(TokioExecutor::new()).build_http::<hyper::body::Incoming>();
     let dash_transcoder = Arc::new(
