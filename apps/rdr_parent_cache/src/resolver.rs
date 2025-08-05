@@ -25,13 +25,13 @@ use std::{io::Write, pin::pin, sync::Arc, time::Duration};
 use tokio::{net::tcp::OwnedWriteHalf, sync::Mutex};
 use tracing::{info, warn};
 
-const PAGE_SETTLE_TIME: u32 = 10;
+const PAGE_SETTLE_TIME: u32 = 8;
 
 /// Extracts the request and response from the provided network event. The network event
 /// must be in the response stage (i.e. `response_status_code` is set). `use_gzip` says
 /// whether to re-compress the response body with gzip (since Chrome auto-decompresses it).
 async fn extract_resource(
-    page: Arc<Page>,
+    page: Page,
     event: Arc<EventRequestPaused>,
     original_accept_encoding: Option<&HeaderValue>,
 ) -> Result<rdr_common::Response> {
@@ -90,7 +90,7 @@ async fn extract_resource(
 /// yields those resources. Non-GET requests are blocked since the
 /// simulated page load should be transparent.
 fn sniff_resources(
-    page: Arc<Page>,
+    page: Page,
     original_accept_encoding: Option<HeaderValue>,
 ) -> impl Stream<Item = rdr_common::Response> {
     stream! {
@@ -227,7 +227,6 @@ impl Resolver {
             }
         }
 
-        let page = Arc::new(page);
         let page_2 = page.clone();
         let writable_stream_2 = writable_stream.clone();
         let original_accept_encoding = req.headers.get(ACCEPT_ENCODING).cloned();
@@ -251,6 +250,8 @@ impl Resolver {
 
         // Give the page time to load and fetch new resources
         tokio::time::sleep(Duration::from_secs(PAGE_SETTLE_TIME as u64)).await;
+
+        page.close().await?;
 
         Ok(())
     }
