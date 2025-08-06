@@ -1,7 +1,6 @@
-use std::process::Stdio;
-
 use anyhow::{Result, bail};
 use mp4_atom::{Atom, FourCC, Header, Moov, ReadAtom, ReadFrom, Stbl, Traf, WriteTo};
+use std::process::Stdio;
 use tokio::{io::AsyncWriteExt, process::Command};
 
 /// Describes the position of an atom in an MP4 file.

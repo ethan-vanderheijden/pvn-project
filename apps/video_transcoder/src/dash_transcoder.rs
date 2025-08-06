@@ -11,9 +11,9 @@ use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::body::Incoming;
 use mp4_atom::{Atom, Moov, ReadAtom, WriteTo};
 use regex::Regex;
-use std::io::Read;
+use std::{io::Read, time::Instant};
 use tokio::{fs, sync::Mutex};
-use tracing::{warn};
+use tracing::{info, warn};
 use xmltree::{Element, XMLNode};
 
 const TARGET_CODEC: &str = "vp09.00.10.08";
@@ -182,11 +182,14 @@ fn uri_prefixes(prefix: &Uri, test: &Uri) -> Option<String> {
     let scheme_matches = test.scheme().is_none()
         || prefix.scheme().is_none()
         || test.scheme().unwrap() == prefix.scheme().unwrap();
-    let authority_matches = test.authority().is_none()
-        || prefix.authority().is_none()
-        || test.authority().unwrap() == prefix.authority().unwrap();
+    let host_matches = test.host().is_none()
+        || prefix.host().is_none()
+        || test.host().unwrap() == prefix.host().unwrap();
+    let port_matches = test.port_u16().is_none()
+        || prefix.port_u16().is_none()
+        || test.port_u16().unwrap() == prefix.port_u16().unwrap();
     let path_prefixes = test.path().starts_with(prefix.path());
-    if scheme_matches && authority_matches && path_prefixes {
+    if scheme_matches && host_matches && port_matches && path_prefixes {
         Some(
             test.path()[prefix.path().len()..]
                 .trim_matches('/')
@@ -379,6 +382,8 @@ impl Transcoder {
                 let original_init_segment = target.original_init_segment.as_ref().unwrap().clone();
                 drop(active_targets);
 
+                let start = Instant::now();
+
                 let (mut parts, body) = read_response(response).await?;
                 let new_body = match mp4_utils::transcode_segment(
                     &original_init_segment,
@@ -396,6 +401,10 @@ impl Transcoder {
                         return Ok(Response::from_parts(parts, full(body)));
                     }
                 };
+
+                let segment_secs = segment_durations as f64 / timescale as f64;
+                let transcode_rate = segment_secs / start.elapsed().as_secs_f64();
+                info!("Transcode rate: {:.4}x", transcode_rate);
 
                 parts
                     .headers

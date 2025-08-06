@@ -4,7 +4,7 @@ mod mp4_utils;
 use anyhow::Result;
 use bytes::Bytes;
 use clap::Parser;
-use http::{header::ACCEPT_ENCODING, HeaderValue, StatusCode};
+use http::{header::{ACCEPT_ENCODING, RANGE}, HeaderValue, StatusCode};
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::{Method, Request, Response, service::service_fn, upgrade::Upgraded};
 use hyper_util::{
@@ -14,7 +14,7 @@ use hyper_util::{
 };
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{Level, warn};
+use tracing::{warn, Level};
 
 #[derive(Parser)]
 struct Args {
@@ -101,6 +101,11 @@ where
         }
     } else {
         let uri_clone = req.uri().clone();
+        // VLC media player will always add a Range header, but byte ranges change after
+        // transcoding the video segments
+        // Range requests aren't necessary for the MPEG-DASH streams we are supporting
+        // so we can remove it
+        req.headers_mut().remove(RANGE);
         req.headers_mut().insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
         match client.request(req).await {
             Ok(response) => match transcoder.process_response(uri_clone, response).await {
