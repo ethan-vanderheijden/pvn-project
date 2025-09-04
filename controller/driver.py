@@ -237,6 +237,8 @@ def _create_ports(pvn_id, count, network):
             {
                 "name": f"pvn.{pvn_id}.app.{i}",
                 "network_id": network,
+                "port_security_enabled": False,
+                "security_groups": [],
             }
         )
     result = config.neutron.create_port(body)
