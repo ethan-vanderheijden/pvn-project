@@ -404,7 +404,7 @@ impl Transcoder {
 
                 let segment_secs = segment_durations as f64 / timescale as f64;
                 let transcode_rate = segment_secs / start.elapsed().as_secs_f64();
-                info!("Transcode rate: {:.4}x", transcode_rate);
+                info!("Transcode rate: {:.5}x", transcode_rate);
 
                 parts
                     .headers

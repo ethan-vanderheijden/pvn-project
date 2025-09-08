@@ -10,8 +10,9 @@ from oslo_config import cfg
 LOG = logging.getLogger(__name__)
 
 TARGET_TABLE = ovs_constants.ACCEPTED_EGRESS_TRAFFIC_NORMAL_TABLE
-STEERING_PRIORITY = 100
-DROP_PRIORITY = 99
+DST_STEERING_PRIORITY = 100
+STEERING_PRIORITY = 99
+DROP_PRIORITY = 98
 
 
 class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
@@ -130,11 +131,15 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
             set_mac = ofpp.OFPActionSetField(eth_dst=rule["overwrite_mac"])
             normal = ofpp.OFPActionOutput(ofp.OFPP_NORMAL, 0)
 
+            priority = STEERING_PRIORITY
+            if rule.get("dest_ip"):
+                priority = DST_STEERING_PRIORITY
+
             for match in self._prepare_matches(ofport, rule):
                 self.int_br.install_apply_actions(
                     [set_mac, normal],
                     table_id=TARGET_TABLE,
-                    priority=STEERING_PRIORITY,
+                    priority=priority,
                     **match,
                 )
         else:
@@ -149,6 +154,8 @@ class PortSteeringAgentExtension(l2_extension.L2AgentExtension):
         priority = STEERING_PRIORITY
         if not rule.get("overwrite_mac"):
             priority = DROP_PRIORITY
+        elif rule.get("dest_ip"):
+            priority = DST_STEERING_PRIORITY
 
         for match in self._prepare_matches(ofport, rule):
             self.int_br.uninstall_flows(
