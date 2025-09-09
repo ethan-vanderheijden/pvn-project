@@ -14,7 +14,7 @@ use hyper_util::{
 };
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{warn, Level};
+use tracing::{warn, info, Level};
 
 #[derive(Parser)]
 struct Args {
@@ -101,6 +101,7 @@ where
         }
     } else {
         let uri_clone = req.uri().clone();
+        info!("Completing request for {}", uri_clone);
         // VLC media player will always add a Range header, but byte ranges change after
         // transcoding the video segments
         // Range requests aren't necessary for the MPEG-DASH streams we are supporting

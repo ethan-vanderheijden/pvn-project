@@ -429,8 +429,10 @@ impl Transcoder {
 
         if let Some(content_type) = response.headers().get(CONTENT_TYPE) {
             if content_type == HeaderValue::from_str("application/dash+xml").unwrap() {
+                info!("Augmenting MPD file for {}", request_uri);
                 return self.sniff_mpd(request_uri, response).await;
             } else if content_type == HeaderValue::from_str("video/mp4").unwrap() {
+                info!("Transcoding segment for {}", request_uri);
                 return self.transcode_segments(request_uri, response).await;
             }
         }

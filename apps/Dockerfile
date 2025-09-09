@@ -2,7 +2,16 @@ FROM rust:latest AS builder
 
 RUN mkdir -p /pvn
 WORKDIR /pvn
-COPY . .
+
+COPY bittorrent_offload bittorrent_offload
+COPY rdr_client_cache rdr_client_cache
+COPY rdr_common rdr_common
+COPY rdr_parent_cache rdr_parent_cache
+COPY tls_validator tls_validator
+COPY video_transcoder video_transcoder
+COPY Cargo.toml Cargo.toml
+COPY Cargo.lock Cargo.lock
+
 RUN cargo install --path tls_validator
 RUN cargo install --path bittorrent_offload
 RUN cargo install --path rdr_parent_cache
@@ -25,9 +34,6 @@ USER pvn
 ENTRYPOINT ["rdr_parent_cache"]
 
 FROM rust:latest AS video_transcoder
-COPY --from=builder /usr/local/cargo/bin/video_transcoder /usr/local/bin/video_transcoder
-RUN mkdir /pvn
-WORKDIR /pvn
 
 RUN apt-get update && apt-get install -y \
         libgstreamer1.0-dev \
@@ -43,13 +49,18 @@ RUN apt-get update && apt-get install -y \
         gcc \
     && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir /pvn
+WORKDIR /pvn
+
 RUN cargo install cargo-c
 RUN git clone https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git
+
 WORKDIR gst-plugins-rs
 RUN cargo cbuild -p gst-plugin-fmp4 --prefix=/usr
 RUN cargo cinstall -p gst-plugin-fmp4 --prefix=/usr
 WORKDIR /pvn
 
+COPY --from=builder /usr/local/cargo/bin/video_transcoder /usr/local/bin/video_transcoder
 COPY video_transcoder/vp9_moov.mp4 vp9_moov.mp4
 COPY video_transcoder/gst_vp9_transcode.c gst_vp9_transcode.c
 RUN gcc -o gst_vp9_transcode gst_vp9_transcode.c $(pkg-config --cflags --libs gstreamer-1.0)
