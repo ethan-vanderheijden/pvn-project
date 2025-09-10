@@ -13,15 +13,9 @@ use rustls::{
     internal::msgs::handshake::{
         ClientExtension, HandshakePayload, ServerExtension, ServerNamePayload,
     },
-    pki_types::{CertificateDer, ServerName, UnixTime},
+    pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject},
 };
-use std::{
-    collections::HashMap,
-    mem,
-    net::IpAddr,
-    sync::{Arc, LazyLock},
-    time::Instant,
-};
+use std::{collections::HashMap, mem, net::IpAddr, sync::Arc, time::Instant};
 use tcp_buffer::TcpBuffer;
 use tracing::{debug, info, warn};
 
@@ -156,7 +150,11 @@ fn process_outgoing_tcp(packet: &TcpPacket, state: &mut FlowState, dest_ip: IpAd
 }
 
 /// Similar to `process_outgoing_tcp`, but processes TCP packets destined for the end user.
-fn process_incoming_tcp(packet: &TcpPacket, state: &mut FlowState) -> bool {
+fn process_incoming_tcp(
+    packet: &TcpPacket,
+    state: &mut FlowState,
+    validator: Arc<WebPkiServerVerifier>,
+) -> bool {
     debug!("Flow status: {:?}", state.status);
 
     match &mut state.status {
@@ -229,7 +227,25 @@ fn process_incoming_tcp(packet: &TcpPacket, state: &mut FlowState) -> bool {
                 };
                 let certs = certs.0;
 
-                if certs.len() == 0 || !validate_certs(&certs, name) {
+                let mut valid = false;
+                if certs.len() > 0 {
+                    match validator.verify_server_cert(
+                        &certs[0],
+                        &certs[1..],
+                        &name,
+                        &[],
+                        UnixTime::now(),
+                    ) {
+                        Ok(_) => {
+                            valid = true;
+                        }
+                        Err(e) => {
+                            warn!("Certificate validation error: {:?}", e);
+                        }
+                    }
+                }
+
+                if !valid {
                     info!("Certs are invalid for {:?}!", name);
                     state.status = Status::Bad;
                 } else {
@@ -247,12 +263,33 @@ fn process_incoming_tcp(packet: &TcpPacket, state: &mut FlowState) -> bool {
 /// TLS Validator middlebox that processes bi-directional TCP packets
 /// and validates TLS certificates.
 pub struct TlsvMiddlebox {
+    validator: Arc<WebPkiServerVerifier>,
     flows: HashMap<TcpFlow, FlowState>,
 }
 
 impl TlsvMiddlebox {
-    pub fn new() -> TlsvMiddlebox {
+    pub fn new(extra_ca: Option<String>) -> TlsvMiddlebox {
+        let mut root_store =
+            RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        if let Some(extra_ca) = extra_ca {
+            for cert in CertificateDer::pem_slice_iter(extra_ca.as_bytes()) {
+                match cert {
+                    Ok(cert) => match root_store.add(cert) {
+                        Ok(_) => info!("Added extra CA certificate!"),
+                        Err(e) => warn!("Failed to add extra CA certificate: {:?}", e),
+                    },
+                    Err(e) => {
+                        warn!("Failed to parse extra CA certificate: {:?}", e);
+                    }
+                }
+            }
+        }
+        let validator = WebPkiServerVerifier::builder(root_store.into())
+            .build()
+            .unwrap();
+
         TlsvMiddlebox {
+            validator,
             flows: HashMap::new(),
         }
     }
@@ -332,6 +369,7 @@ impl TlsvMiddlebox {
     ) -> TlsvResult<'static> {
         let src_ip = flow.source_ip.clone();
         let dest_ip = flow.dest_ip.clone();
+        let validator_clone = self.validator.clone();
         if let Ok(flow_state) = self.update_flow_state(packet, flow, is_outgoing) {
             let valid;
             let rst_seqno;
@@ -339,7 +377,7 @@ impl TlsvMiddlebox {
                 valid = process_outgoing_tcp(packet, flow_state, dest_ip.clone());
                 rst_seqno = flow_state.client_expected_seqno.unwrap_or(0);
             } else {
-                valid = process_incoming_tcp(packet, flow_state);
+                valid = process_incoming_tcp(packet, flow_state, validator_clone);
                 rst_seqno = flow_state.server_expected_seqno.unwrap_or(0);
             };
 
@@ -381,21 +419,4 @@ impl TlsvMiddlebox {
     ) -> TlsvResult<'static> {
         self.validate_flow(tcp_packet, flow, false)
     }
-}
-
-static VALIDATOR: LazyLock<Arc<WebPkiServerVerifier>> = LazyLock::new(|| {
-    let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    WebPkiServerVerifier::builder(root_store.into())
-        .build()
-        .unwrap()
-});
-
-fn validate_certs(certs: &[CertificateDer], name: &ServerName) -> bool {
-    if certs.len() == 0 {
-        return false;
-    }
-
-    let verified =
-        VALIDATOR.verify_server_cert(&certs[0], &certs[1..], &name, &[], UnixTime::now());
-    return verified.is_ok();
 }

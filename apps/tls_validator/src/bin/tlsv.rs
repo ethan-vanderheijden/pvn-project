@@ -1,4 +1,5 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use clap::Parser;
 use pnet::{
     datalink::{self, Channel::Ethernet, ChannelType, Config, NetworkInterface},
     packet::{
@@ -9,12 +10,9 @@ use pnet::{
         tcp::TcpPacket,
     },
 };
-use std::{
-    env,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tls_validator::{TcpFlow, TlsvMiddlebox, TlsvResult};
-use tracing::{error, Level};
+use tracing::{Level, error};
 
 const BUFFER_SIZE: usize = 16384;
 const NEW_PACKET_TTL: u8 = 64;
@@ -50,7 +48,7 @@ fn prepare_ipv6_packet(packet_buf: &mut [u8], src: Ipv6Addr, dest: Ipv6Addr, tcp
 
 /// Listens for IPv4 + TCP packets coming into the interface and sends them to the
 /// TLS Validator middlebox for processing. Forwards packets as directed by the middlebox.
-fn process_ipv4(interface: &NetworkInterface, client_ip: Ipv4Addr) {
+fn process_ipv4(interface: &NetworkInterface, client_ip: Ipv4Addr, extra_ca: Option<String>) {
     let config = Config {
         write_buffer_size: BUFFER_SIZE,
         read_buffer_size: BUFFER_SIZE,
@@ -62,7 +60,7 @@ fn process_ipv4(interface: &NetworkInterface, client_ip: Ipv4Addr) {
         error!("Couldn't find Ethernet channel.");
         return;
     };
-    let mut middlebox = TlsvMiddlebox::new();
+    let mut middlebox = TlsvMiddlebox::new(extra_ca);
 
     loop {
         match rx.next() {
@@ -133,7 +131,7 @@ fn process_ipv4(interface: &NetworkInterface, client_ip: Ipv4Addr) {
 }
 
 /// Identical to `process_ipv4`, but for IPv6 packets.
-fn process_ipv6(interface: &NetworkInterface, client_ip: Ipv6Addr) {
+fn process_ipv6(interface: &NetworkInterface, client_ip: Ipv6Addr, extra_ca: Option<String>) {
     let config = Config {
         write_buffer_size: BUFFER_SIZE,
         read_buffer_size: BUFFER_SIZE,
@@ -145,7 +143,7 @@ fn process_ipv6(interface: &NetworkInterface, client_ip: Ipv6Addr) {
         error!("Couldn't find Ethernet channel.");
         return;
     };
-    let mut middlebox = TlsvMiddlebox::new();
+    let mut middlebox = TlsvMiddlebox::new(extra_ca);
 
     loop {
         match rx.next() {
@@ -212,28 +210,28 @@ fn process_ipv6(interface: &NetworkInterface, client_ip: Ipv6Addr) {
     }
 }
 
+#[derive(clap::Parser)]
+struct Args {
+    client_ip: IpAddr,
+    extra_ca: Option<String>,
+    #[clap(long, default_value_t = false)]
+    debug: bool,
+}
+
 /// The TLS Validator silently listens to TCP packets traversing to/from the end user
 /// and sniffs out the server's TLS certificate. The middlebox performs its own cert
 /// validation, and if the certificate is invalid, it disrupts the connection with
 /// RST packets.
 fn main() -> Result<()> {
-    let mut args = env::args();
-    if args.len() != 2 {
-        return Err(anyhow!("Usage: ./tlsv <client_ip>"));
-    }
+    let args = Args::parse();
 
-    args.next();
-    let client_ip = args.next().unwrap();
-    let Ok(client_ip) = client_ip.parse::<IpAddr>() else {
-        return Err(anyhow!(
-            "Provided client_ip could not be parsed as an IP address."
-        ));
+    let subscriber = tracing_subscriber::fmt();
+    let subscriber = if args.debug {
+        subscriber.with_max_level(Level::DEBUG)
+    } else {
+        subscriber.with_max_level(Level::INFO)
     };
-
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    tracing::subscriber::set_global_default(subscriber.finish())?;
 
     let interfaces = datalink::interfaces();
     let interface = interfaces
@@ -241,9 +239,9 @@ fn main() -> Result<()> {
         .find(|e| e.is_up() && !e.is_loopback() && !e.ips.is_empty())
         .expect("Could not find interface to bind to.");
 
-    match client_ip {
-        IpAddr::V4(client_ip) => process_ipv4(interface, client_ip),
-        IpAddr::V6(client_ip) => process_ipv6(interface, client_ip),
+    match args.client_ip {
+        IpAddr::V4(client_ip) => process_ipv4(interface, client_ip, args.extra_ca),
+        IpAddr::V6(client_ip) => process_ipv6(interface, client_ip, args.extra_ca),
     }
     Ok(())
 }
