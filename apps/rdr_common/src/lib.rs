@@ -98,6 +98,21 @@ impl Into<http::Request<()>> for Request {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum DownstreamMessage {
+    Response(Response),
+    PageLoaded(PageLoadNotification),
+}
+
+impl DownstreamMessage {
+    pub fn url(&self) -> &Url {
+        match self {
+            DownstreamMessage::Response(resp) => &resp.url,
+            DownstreamMessage::PageLoaded(note) => &note.url,
+        }
+    }
+}
+
 /// Information about an HTTP resource transfered from parent cache to client.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Response {
@@ -146,4 +161,11 @@ impl Debug for Response {
             .field("data_length", &self.data.len())
             .finish()
     }
+}
+
+/// Used by parent cache to send performance metrics to child cache.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PageLoadNotification {
+    pub url: Url,
+    pub lcp_secs: f64,
 }

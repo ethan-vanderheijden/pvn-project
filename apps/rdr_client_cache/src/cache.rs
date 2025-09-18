@@ -121,14 +121,21 @@ impl<T: CacheManager + Clone, C> Clone for HttpChildCache<T, C> {
 
 impl<T: CacheManager, C: Client> HttpChildCache<T, C> {
     /// Create a new HTTP caching proxy that uses `client` to perform all GET requests.
-    pub fn new(cache_manager: T, client: Arc<C>) -> HttpChildCache<T, C> {
+    pub fn new(cache_manager: T, client: Arc<C>, disable_caching: bool) -> HttpChildCache<T, C> {
         let cache_opts = CacheOptions {
             shared: false,
             ..CacheOptions::default()
         };
+
+        let cache_mode = if disable_caching {
+            CacheMode::NoStore
+        } else {
+            CacheMode::Default
+        };
+
         HttpChildCache {
             cache: HttpCache {
-                mode: CacheMode::Default,
+                mode: cache_mode,
                 manager: cache_manager,
                 options: HttpCacheOptions {
                     cache_options: Some(cache_opts),

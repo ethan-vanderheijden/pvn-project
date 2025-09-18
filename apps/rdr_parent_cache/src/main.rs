@@ -15,6 +15,8 @@ struct Args {
                 navigation (based on Sec-Fetch-Mode)."
     )]
     recursive_resolve_everything: bool,
+    #[clap(long, default_value = "8", help = "Seconds to wait on a page loading new resources before closing it")]
+    page_settle_time: u32,
 }
 
 /// The RDR parent cache reads HTTP GET requests from the downstream client cache
@@ -28,6 +30,6 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let args = Args::parse();
-    server::serve(args.port, args.recursive_resolve_everything).await?;
+    server::serve(args.port, args.recursive_resolve_everything, args.page_settle_time).await?;
     Ok(())
 }

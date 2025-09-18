@@ -1,3 +1,4 @@
 __pycache__
 apps/target
 apps/video_transcoder/gst_vp9_transcode
+.vscode

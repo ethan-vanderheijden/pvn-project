@@ -5,8 +5,14 @@ use async_trait::async_trait;
 use http::HeaderMap;
 use http_cache::CacheManager;
 use http_cache_semantics::CachePolicy;
-use rdr_common::{WireProtocol, event_hub::EventHub};
-use std::{clone::Clone, fmt, net::SocketAddr, sync::Arc, time::Duration};
+use rdr_common::{DownstreamMessage, WireProtocol, event_hub::EventHub};
+use std::{
+    clone::Clone,
+    fmt,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 use tokio::{
     net::{
         TcpStream,
@@ -99,6 +105,9 @@ async fn inject_to_cache(resource: rdr_common::Response, cache: &impl CacheManag
 /// This function indefinitely holds a reference to the client instance. We detect
 /// when all other references are gone and drop our reference too.
 async fn read_loop<C: CacheManager>(parent_addr: SocketAddr, client: Arc<PullThroughClient<C>>) {
+    println!("time,page_load_duration");
+    let start_time = SystemTime::now();
+
     // Invariant: if read_half is None, then client.conn should also be None.
     let mut read_half: Option<OwnedReadHalf> = None;
     loop {
@@ -110,22 +119,33 @@ async fn read_loop<C: CacheManager>(parent_addr: SocketAddr, client: Arc<PullThr
         }
 
         if let Some(reader) = &mut read_half {
-            match rdr_common::Response::extract_from(reader).await {
+            match DownstreamMessage::extract_from(reader).await {
                 Ok(response) => {
-                    // if the notification goes through, we don't need to add response to cache
-                    // since http-cache will do this automatically
-                    let mut pending_requests = client.pending_requests.lock().await;
-                    if let Err(response) =
-                        pending_requests.notify(&response.original_request.url.clone(), response)
-                    {
-                        drop(pending_requests);
-                        // extra resource pushed by parent cache, must add to cache manually
-                        info!(
-                            "Extra resource pushed by parent cache: {}",
-                            response.original_request.url
-                        );
-                        if let Err(error) = inject_to_cache(response, &client.cache).await {
-                            warn!("Failed to inject pushed resource into cache: {error}");
+                    match response {
+                        DownstreamMessage::Response(response) => {
+                            // if the notification goes through, we don't need to add response to cache
+                            // since http-cache will do this automatically
+                            let mut pending_requests = client.pending_requests.lock().await;
+                            if let Err(response) = pending_requests
+                                .notify(&response.original_request.url.clone(), response)
+                            {
+                                drop(pending_requests);
+                                // extra resource pushed by parent cache, must add to cache manually
+                                info!(
+                                    "Extra resource pushed by parent cache: {}",
+                                    response.original_request.url
+                                );
+                                if let Err(error) = inject_to_cache(response, &client.cache).await {
+                                    warn!("Failed to inject pushed resource into cache: {error}");
+                                }
+                            }
+                        }
+                        DownstreamMessage::PageLoaded(notification) => {
+                            let elapsed = SystemTime::now()
+                                .duration_since(start_time)
+                                .unwrap()
+                                .as_secs_f32();
+                            println!("{},{}", elapsed, notification.lcp_secs);
                         }
                     }
                     continue;

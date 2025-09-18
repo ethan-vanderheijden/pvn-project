@@ -13,9 +13,9 @@ COPY Cargo.toml Cargo.toml
 COPY Cargo.lock Cargo.lock
 
 RUN cargo install --path tls_validator
-# RUN cargo install --path bittorrent_offload
-# RUN cargo install --path rdr_parent_cache
-# RUN cargo install --path video_transcoder
+RUN cargo install --path bittorrent_offload
+RUN cargo install --path rdr_parent_cache
+RUN cargo install --path video_transcoder
 
 FROM ubuntu:latest AS tls_validator
 
@@ -30,12 +30,14 @@ FROM ubuntu:latest AS bittorrent_offload
 COPY --from=builder /usr/local/cargo/bin/bittorrent_offload /usr/local/bin/bittorrent_offload
 ENTRYPOINT ["bittorrent_offload"]
 
-FROM zenika/alpine-chrome:latest AS rdr_parent_cache
+FROM selenium/standalone-chromium:latest AS rdr_parent_cache
 USER root
 RUN apt-get update && apt-get install -y libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/cargo/bin/rdr_parent_cache /usr/local/bin/rdr_parent_cache
 RUN useradd -ms /bin/bash pvn
 USER pvn
+ENV XDG_CONFIG_HOME=/tmp/.chromium
+ENV XDG_CACHE_HOME=/tmp/.chromium
 ENTRYPOINT ["rdr_parent_cache"]
 
 FROM rust:latest AS video_transcoder

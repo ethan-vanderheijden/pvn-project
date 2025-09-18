@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use async_stream::stream;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use chromiumoxide::{
@@ -9,6 +9,7 @@ use chromiumoxide::{
             GetResponseBodyParams, RequestPattern, RequestStage,
         },
         network::{CookieParam, ErrorReason, SetUserAgentOverrideParams},
+        performance_timeline::{self, EventTimelineEventAdded},
         target::{CreateBrowserContextParams, CreateTargetParams},
     },
 };
@@ -19,13 +20,11 @@ use http::{
     HeaderMap, HeaderName, HeaderValue, Method,
     header::{ACCEPT_ENCODING, ACCEPT_LANGUAGE, CONTENT_ENCODING, COOKIE, USER_AGENT},
 };
-use rdr_common::WireProtocol;
+use rdr_common::{DownstreamMessage, PageLoadNotification, WireProtocol};
 use reqwest::Client;
-use std::{io::Write, pin::pin, sync::Arc, time::Duration};
+use std::{io::Write, pin::pin, sync::Arc, time::{Duration, SystemTime}};
 use tokio::{net::tcp::OwnedWriteHalf, sync::Mutex};
 use tracing::{info, warn};
-
-const PAGE_SETTLE_TIME: u32 = 8;
 
 /// Extracts the request and response from the provided network event. The network event
 /// must be in the response stage (i.e. `response_status_code` is set). `use_gzip` says
@@ -153,16 +152,35 @@ fn sniff_resources(
     }
 }
 
+/// Returns the page's Largest Contentful Paint (LCP).
+async fn record_lcp(page: Page) -> Result<f64> {
+    let timeline_enable = performance_timeline::EnableParams::builder()
+        .event_type("largest-contentful-paint")
+        .build()
+        .map_err(anyhow::Error::msg)?;
+    page.execute(timeline_enable).await?;
+
+    let mut timeline_events = page.event_listener::<EventTimelineEventAdded>().await?;
+    while let Some(event) = timeline_events.next().await {
+        let event = &event.event;
+        if let Some(lcp) = &event.lcp_details {
+            return Ok(*lcp.render_time.inner());
+        }
+    }
+    bail!("Failed to record LCP");
+}
+
 /// The Resolver is capable of performing HTTP GET requests by simulating a full page load
 /// or making a single, direct request.
 pub struct Resolver {
     browser: Browser,
     client: Client,
+    page_settle_time: u32,
 }
 
 impl Resolver {
     /// Create a headless Chrome instance and HTTP client for future request resolution.
-    pub async fn new() -> Result<Self> {
+    pub async fn new(page_settle_time: u32) -> Result<Self> {
         let config = BrowserConfig::builder()
             .new_headless_mode()
             .enable_request_intercept()
@@ -179,6 +197,7 @@ impl Resolver {
         Ok(Self {
             browser,
             client: Client::new(),
+            page_settle_time,
         })
     }
 
@@ -190,6 +209,9 @@ impl Resolver {
         writable_stream: Arc<Mutex<OwnedWriteHalf>>,
         req: rdr_common::Request,
     ) -> Result<()> {
+        let start = SystemTime::now();
+        let time_since_epoch = start.duration_since(SystemTime::UNIX_EPOCH)?.as_secs_f64();
+
         let context_params = CreateBrowserContextParams::builder()
             .dispose_on_detach(true)
             .build();
@@ -234,9 +256,10 @@ impl Resolver {
             let mut stream = pin!(sniff_resources(page_2, original_accept_encoding));
             while let Some(resource) = stream.next().await {
                 let mut writable = writable_stream_2.lock().await;
-                match resource.serialize_to(&mut *writable).await {
+                let msg = DownstreamMessage::Response(resource);
+                match msg.serialize_to(&mut *writable).await {
                     Ok(_) => {
-                        info!("Pushed resource for '{}'", resource.url);
+                        info!("Pushed resource for '{}'", msg.url());
                     }
                     Err(error) => {
                         warn!("Failed to write resource: {error}");
@@ -245,11 +268,39 @@ impl Resolver {
             }
         });
 
+        let page_3 = page.clone();
+        let writable_stream_3 = writable_stream.clone();
+        let url_2 = req.url.clone();
+        tokio::spawn(async move {
+            match record_lcp(page_3).await {
+                Ok(lcp) => {
+                    let time_to_load = lcp - time_since_epoch;
+                    let perf = PageLoadNotification {
+                        url: url_2,
+                        lcp_secs: time_to_load,
+                    };
+                    let mut writable = writable_stream_3.lock().await;
+                    let msg = DownstreamMessage::PageLoaded(perf);
+                    match msg.serialize_to(&mut *writable).await {
+                        Ok(_) => {
+                            info!("Recorded LCP of {}s for '{}'", time_to_load, msg.url());
+                        }
+                        Err(error) => {
+                            warn!("Failed to write LCP notification: {error}");
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!("Failed to record LCP: {error}");
+                }
+            }
+        });
+
         info!("Performing navigation to: {}", req.url.clone());
         page.goto(req.url.clone()).await?;
 
         // Give the page time to load and fetch new resources
-        tokio::time::sleep(Duration::from_secs(PAGE_SETTLE_TIME as u64)).await;
+        tokio::time::sleep(Duration::from_secs(self.page_settle_time as u64)).await;
 
         page.close().await?;
 
@@ -276,7 +327,8 @@ impl Resolver {
             data: response.bytes().await?.to_vec(),
         };
         let mut writerable_stream = writable_stream.lock().await;
-        resource.serialize_to(&mut *writerable_stream).await?;
+        let msg = DownstreamMessage::Response(resource);
+        msg.serialize_to(&mut *writerable_stream).await?;
         Ok(())
     }
 }

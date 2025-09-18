@@ -46,8 +46,8 @@ async fn read_requests(stream: TcpStream, resolver: Arc<Resolver>, always_recurs
 }
 
 /// Start listening for client cache TCP connections on the specified port.
-pub async fn serve(port: u16, always_recursive: bool) -> Result<()> {
-    let resolver = Arc::new(Resolver::new().await?);
+pub async fn serve(port: u16, always_recursive: bool, page_settle_time: u32) -> Result<()> {
+    let resolver = Arc::new(Resolver::new(page_settle_time).await?);
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
 
     loop {

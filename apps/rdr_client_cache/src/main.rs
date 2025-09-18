@@ -13,7 +13,7 @@ use hudsucker::{
     rcgen::{CertificateParams, KeyPair},
     rustls::crypto::aws_lc_rs,
 };
-use std::net::ToSocketAddrs;
+use std::{io, net::ToSocketAddrs};
 use tokio::fs;
 use tracing::{Level, error};
 
@@ -27,8 +27,14 @@ struct Args {
     cache_file: String,
     #[clap(help = "Address of the parent RDR cache")]
     upstream_cache_address: String,
-    #[clap(long, default_value = "4000", help = "Port to run the RDR client cache on")]
+    #[clap(
+        long,
+        default_value = "4000",
+        help = "Port to run the RDR client cache on"
+    )]
     port: u16,
+    #[clap(long, help = "Forward all requests onto the network")]
+    disable_caching: bool,
 }
 
 /// The RDR client cache uses Hudsucker act as a man-in-the-middle HTTP proxy and http-cache
@@ -40,6 +46,7 @@ struct Args {
 async fn main() -> Result<()> {
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
+        .with_writer(io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
@@ -61,7 +68,7 @@ async fn main() -> Result<()> {
         .expect("Could not resolve upstream cache adress");
     let cacache = CACacheManager::new(args.cache_file.into(), false);
     let client = PullThroughClient::new(parent_addr, cacache.clone()).await;
-    let child_cache = HttpChildCache::new(cacache, client);
+    let child_cache = HttpChildCache::new(cacache, client, args.disable_caching);
 
     let proxy = Proxy::builder()
         .with_addr(
