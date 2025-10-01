@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_lite::StreamExt;
-use librqbit::{AddTorrent, AddTorrentOptions, Api, ApiError, api::TorrentIdOrHash};
+use librqbit::{api::TorrentIdOrHash, limits::LimitsConfig, AddTorrent, AddTorrentOptions, Api, ApiError};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -38,9 +38,19 @@ impl TorrentState {
     }
 }
 
+
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum NewTorrent {
+struct NewTorrent {
+    #[serde(flatten)]
+    source: NewTorrentSource,
+    #[serde(flatten)]
+    limits: LimitsConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum NewTorrentSource {
     Url(String),
     File(Uuid),
 }
@@ -119,16 +129,17 @@ async fn add_torrent(
 ) -> Result<impl IntoResponse, impl IntoResponse> {
     let options = AddTorrentOptions {
         sub_folder: Some(Uuid::new_v4().to_string()),
+        ratelimits: torrent.limits,
         ..Default::default()
     };
-    match torrent {
-        NewTorrent::Url(url) => map_result(
+    match torrent.source {
+        NewTorrentSource::Url(url) => map_result(
             session
                 .api
                 .api_add_torrent(AddTorrent::Url(url.into()), Some(options))
                 .await,
         ),
-        NewTorrent::File(data) => {
+        NewTorrentSource::File(data) => {
             let torrent_files = session.torrent_files.lock().await;
             if torrent_files.contains(&data) {
                 let filename = format!("{}/{}", session.torrent_file_folder, data);
