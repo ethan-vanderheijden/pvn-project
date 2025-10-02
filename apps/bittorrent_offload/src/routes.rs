@@ -1,4 +1,3 @@
-use async_walkdir::WalkDir;
 use axum::{
     Extension, Json, Router,
     extract::{Multipart, Path},
@@ -6,21 +5,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_lite::StreamExt;
-use librqbit::{api::TorrentIdOrHash, limits::LimitsConfig, AddTorrent, AddTorrentOptions, Api, ApiError};
+use librqbit::{
+    AddTorrent, AddTorrentOptions, Api, ApiError, api::TorrentIdOrHash, limits::LimitsConfig,
+};
+use mtzip::ZipArchive;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashSet,
-    io::{Cursor, Write},
-    sync::Arc,
-};
-use tokio::{
-    fs::{self, File},
-    io::AsyncWriteExt,
-    sync::Mutex,
-};
+use std::{collections::HashSet, io::Cursor, sync::Arc};
+use tokio::{fs::File, io::AsyncWriteExt, sync::Mutex, task};
 use uuid::Uuid;
-use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+use walkdir::WalkDir;
 
 pub struct TorrentState {
     pub api: Api,
@@ -37,7 +30,6 @@ impl TorrentState {
         }
     }
 }
-
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -158,23 +150,37 @@ async fn add_torrent(
 }
 
 async fn build_zip(folder_path: &str) -> anyhow::Result<Vec<u8>> {
-    let buf = Vec::new();
-    let mut zip = ZipWriter::new(Cursor::new(buf));
-    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let folder_path_2 = folder_path.to_string();
+    let buf = task::spawn_blocking(move || -> Result<Vec<u8>, anyhow::Error> {
+        let mut zip = ZipArchive::new();
+        let mut dirs = HashSet::new();
 
-    let mut entries = WalkDir::new(folder_path);
-    while let Some(entry) = entries.next().await {
-        let entry = entry?;
-        if entry.file_type().await?.is_file() {
-            let path = format!("files/{}", entry.file_name().to_str().unwrap());
-            zip.start_file(path, options)?;
-            let file_data = fs::read(entry.path()).await?;
-            zip.write_all(&file_data)?;
+        let folder_path_3 = folder_path_2.to_string();
+        let entries = WalkDir::new(folder_path_2);
+        for entry in entries {
+            let entry = entry?;
+            let rel_path = entry.path().strip_prefix(&folder_path_3)?;
+            if entry.file_type().is_file() {
+                if let Some(parent) = rel_path.parent() {
+                    let parent = parent.to_string_lossy().to_string();
+                    if !dirs.contains(&parent) {
+                        zip.add_directory(format!("files/{}/", parent)).done();
+                        dirs.insert(parent);
+                    }
+                }
+                let path = format!("files/{}", rel_path.to_string_lossy());
+                zip.add_file_from_fs(entry.path().to_owned(), path).done();
+            }
         }
-    }
 
-    let cursor = zip.finish()?;
-    Ok(cursor.into_inner())
+        let mut buf = Vec::new();
+        let mut cursor = Cursor::new(&mut buf);
+        zip.write(&mut cursor)?;
+        Ok(buf)
+    })
+    .await??;
+
+    Ok(buf)
 }
 
 async fn direct_download(session: Extension<Arc<TorrentState>>, Path(id): Path<usize>) -> Response {
@@ -184,7 +190,7 @@ async fn direct_download(session: Extension<Arc<TorrentState>>, Path(id): Path<u
                 let mut result = (
                     StatusCode::SERVICE_UNAVAILABLE,
                     [(header::CONTENT_TYPE, "text/plain")],
-                    "Torrent is not finished downloading".as_bytes().to_vec(),
+                    "Torrent has not finished downloading".as_bytes().to_vec(),
                 );
                 if stats.finished {
                     let zip = build_zip(&details.output_folder).await;
